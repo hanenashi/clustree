@@ -1,5 +1,5 @@
 # GUI Framework
-PyQt6>=6.4.0
+PyQt5>=5.15.0
 
 # Image & EXIF Processing
 Pillow>=9.0.0
