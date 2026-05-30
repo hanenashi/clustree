@@ -331,8 +331,11 @@ class ClustreeWindow(QMainWindow):
 
         self.cluster_list = ClusterListWidget()
         self.cluster_list.setFixedWidth(330)
+        self.cluster_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.cluster_list.itemClicked.connect(self.start_loading_cluster)
         self.cluster_list.file_reassigned.connect(self.handle_file_reassigned)
+        self.cluster_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.cluster_list.customContextMenuRequested.connect(self.show_cluster_context_menu)
 
         left_panel.addWidget(self.cluster_list)
         main_layout.addLayout(left_panel)
@@ -485,7 +488,7 @@ class ClustreeWindow(QMainWindow):
             FROM clusters
             WHERE status != 'archived'
               AND file_count > 0
-            ORDER BY start_date ASC
+            ORDER BY start_date ASC, id ASC
             """
         )
         clusters = cursor.fetchall()
@@ -573,6 +576,226 @@ class ClustreeWindow(QMainWindow):
         )
 
         self.thumbnail_grid.addItem(thumb_item)
+
+    # -------------------------------------------------------------------------
+    # Cluster list context menu / merge
+    # -------------------------------------------------------------------------
+
+    def _selected_cluster_ids(self):
+        """Returns selected cluster IDs from the left cluster list in visible order."""
+        selected_raw = []
+
+        for item in self.cluster_list.selectedItems():
+            cluster_id = item.data(Qt.ItemDataRole.UserRole)
+            if cluster_id is not None:
+                selected_raw.append(cluster_id)
+
+        ordered = []
+        for row in range(self.cluster_list.count()):
+            item = self.cluster_list.item(row)
+            cluster_id = item.data(Qt.ItemDataRole.UserRole)
+            if cluster_id in selected_raw and cluster_id not in ordered:
+                ordered.append(cluster_id)
+
+        return ordered
+
+    def show_cluster_context_menu(self, pos):
+        """
+        Right-click menu for the cluster list.
+
+        Supports:
+        - merge selected clusters
+        - merge single cluster with previous
+        - merge single cluster with next
+        """
+        item = self.cluster_list.itemAt(pos)
+
+        if not item:
+            return
+
+        if not item.isSelected():
+            self.cluster_list.clearSelection()
+            item.setSelected(True)
+            self.cluster_list.setCurrentItem(item)
+
+        selected_ids = self._selected_cluster_ids()
+        if not selected_ids:
+            return
+
+        menu = QMenu(self)
+
+        merge_selected_action = None
+        merge_previous_action = None
+        merge_next_action = None
+
+        if len(selected_ids) >= 2:
+            merge_selected_action = menu.addAction(f"Merge selected clusters ({len(selected_ids)})")
+        else:
+            merge_previous_action = menu.addAction("Merge with previous cluster")
+            merge_next_action = menu.addAction("Merge with next cluster")
+
+        action = menu.exec_(self.cluster_list.mapToGlobal(pos))
+
+        if merge_selected_action and action == merge_selected_action:
+            self.merge_clusters(selected_ids)
+            return
+
+        if merge_previous_action and action == merge_previous_action:
+            neighbor_ids = self._neighbor_cluster_ids(selected_ids[0])
+            if neighbor_ids["previous"] is None:
+                QMessageBox.information(self, "Cannot Merge", "There is no previous cluster.")
+                return
+            self.merge_clusters([neighbor_ids["previous"], selected_ids[0]])
+            return
+
+        if merge_next_action and action == merge_next_action:
+            neighbor_ids = self._neighbor_cluster_ids(selected_ids[0])
+            if neighbor_ids["next"] is None:
+                QMessageBox.information(self, "Cannot Merge", "There is no next cluster.")
+                return
+            self.merge_clusters([selected_ids[0], neighbor_ids["next"]])
+            return
+
+    def _active_cluster_ids_in_order(self):
+        """Returns active cluster IDs in sidebar order."""
+        cursor = self.db.conn.cursor()
+        cursor.execute(
+            """
+            SELECT id
+            FROM clusters
+            WHERE status != 'archived'
+              AND file_count > 0
+            ORDER BY start_date ASC, id ASC
+            """
+        )
+        return [row["id"] for row in cursor.fetchall()]
+
+    def _neighbor_cluster_ids(self, cluster_id):
+        """Returns previous/next active cluster IDs for one cluster."""
+        ids = self._active_cluster_ids_in_order()
+
+        if cluster_id not in ids:
+            return {"previous": None, "next": None}
+
+        index = ids.index(cluster_id)
+
+        previous_id = ids[index - 1] if index > 0 else None
+        next_id = ids[index + 1] if index < len(ids) - 1 else None
+
+        return {
+            "previous": previous_id,
+            "next": next_id,
+        }
+
+    def merge_clusters(self, cluster_ids):
+        """
+        Merges several clusters into the first cluster ID in the list.
+
+        Files are reassigned in DB only.
+        No disk files are moved here.
+        """
+        cluster_ids = [cid for cid in cluster_ids if cid is not None]
+
+        deduped = []
+        for cid in cluster_ids:
+            if cid not in deduped:
+                deduped.append(cid)
+
+        cluster_ids = deduped
+
+        if len(cluster_ids) < 2:
+            return
+
+        target_cluster_id = cluster_ids[0]
+        source_cluster_ids = cluster_ids[1:]
+
+        reply = QMessageBox.question(
+            self,
+            "Merge Clusters",
+            f"Merge {len(cluster_ids)} clusters into Event {target_cluster_id}?\n\n"
+            "This only changes Clustree's database grouping. It does not move files on disk.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+
+        if reply != QMessageBox.Yes:
+            return
+
+        cursor = self.db.conn.cursor()
+
+        try:
+            placeholders = ",".join("?" for _ in source_cluster_ids)
+
+            cursor.execute(
+                f"""
+                UPDATE files
+                SET cluster_id = ?
+                WHERE cluster_id IN ({placeholders})
+                  AND status != 'archived'
+                """,
+                [target_cluster_id] + source_cluster_ids,
+            )
+
+            cursor.execute(
+                "SELECT assigned_name FROM clusters WHERE id = ?",
+                (target_cluster_id,),
+            )
+            target = cursor.fetchone()
+            target_name = (target["assigned_name"] or "").strip() if target else ""
+
+            if not target_name:
+                cursor.execute(
+                    f"""
+                    SELECT assigned_name
+                    FROM clusters
+                    WHERE id IN ({placeholders})
+                      AND assigned_name IS NOT NULL
+                      AND TRIM(assigned_name) != ''
+                    ORDER BY start_date ASC, id ASC
+                    LIMIT 1
+                    """,
+                    source_cluster_ids,
+                )
+                source_name_row = cursor.fetchone()
+
+                if source_name_row:
+                    cursor.execute(
+                        "UPDATE clusters SET assigned_name = ? WHERE id = ?",
+                        (source_name_row["assigned_name"], target_cluster_id),
+                    )
+
+            cursor.execute(
+                f"""
+                UPDATE clusters
+                SET file_count = 0,
+                    status = 'merged'
+                WHERE id IN ({placeholders})
+                """,
+                source_cluster_ids,
+            )
+
+            self._recalculate_cluster_dates_and_count(cursor, target_cluster_id)
+            self.db.conn.commit()
+
+            self.invalidate_plan()
+            self.load_clusters()
+            self.load_cluster_by_id(target_cluster_id)
+
+            self.update_status(
+                f"Merged {len(cluster_ids)} clusters into Event {target_cluster_id}"
+            )
+
+        except Exception as e:
+            self.db.conn.rollback()
+            QMessageBox.critical(
+                self,
+                "Merge Failed",
+                f"Could not merge clusters:\n{str(e)}",
+            )
+
+    # -------------------------------------------------------------------------
+    # Thumbnail context menu / split
+    # -------------------------------------------------------------------------
 
     def show_thumbnail_context_menu(self, pos):
         item = self.thumbnail_grid.itemAt(pos)
@@ -664,7 +887,6 @@ class ClustreeWindow(QMainWindow):
             )
             return
 
-        old_files = files[:split_index]
         new_files = files[split_index:]
         new_file_ids = [row["id"] for row in new_files]
 
@@ -712,6 +934,10 @@ class ClustreeWindow(QMainWindow):
                 "Split Failed",
                 f"Could not split cluster:\n{str(e)}",
             )
+
+    # -------------------------------------------------------------------------
+    # Cluster recalculation helpers
+    # -------------------------------------------------------------------------
 
     def _recalculate_all_cluster_counts(self, cursor):
         cursor.execute(
@@ -769,6 +995,10 @@ class ClustreeWindow(QMainWindow):
             (start_date, end_date, count, cluster_id),
         )
 
+    # -------------------------------------------------------------------------
+    # Naming / plan / run
+    # -------------------------------------------------------------------------
+
     def save_cluster_name(self):
         if not self.current_cluster_id:
             return
@@ -819,7 +1049,6 @@ class ClustreeWindow(QMainWindow):
         if self.settings.rename_pattern == "keep_original":
             return f"{timestamp_part}_{safe_name}_{old_path.name}"
 
-        # Default: clean human-friendly sequence.
         return f"{date_part}_{safe_name}_{sequence_number:03d}{suffix}"
 
     def _unique_planned_path(self, path: Path, reserved_paths: set) -> Path:
@@ -847,7 +1076,7 @@ class ClustreeWindow(QMainWindow):
               AND file_count > 0
               AND assigned_name IS NOT NULL
               AND TRIM(assigned_name) != ''
-            ORDER BY start_date ASC
+            ORDER BY start_date ASC, id ASC
             """
         )
         clusters = cursor.fetchall()
