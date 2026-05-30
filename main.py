@@ -1,12 +1,18 @@
 import os
 import shutil
+import warnings  
 from pathlib import Path
+
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QListWidget, QListWidgetItem, QLabel, QProgressBar,
                              QLineEdit, QPushButton, QMessageBox)
+
+# Silence the High Sierra SIP deprecation warning
 warnings.filterwarnings("ignore", message="sipPyTypeDict.. is deprecated")
+
 from PyQt5.QtGui import QPixmap, QIcon, QImage
 from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal
+
 
 class ThumbnailWorker(QThread):
     """Background thread to safely load and scale images without freezing the UI."""
