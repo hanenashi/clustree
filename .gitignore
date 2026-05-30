@@ -22,6 +22,7 @@ clustree_settings.json
 logs/
 _TRASH_DUPLICATES/
 clustree_move_plan_*.json
+clustree_executed_plan_*.json
 
 # IDEs and Editors
 .vscode/
