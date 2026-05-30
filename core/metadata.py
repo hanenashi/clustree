@@ -17,10 +17,11 @@ class MetadataExtractor:
     def __init__(self, db: ClustreeDB):
         self.db = db
         
-        # Regex patterns to catch standard filename dates (e.g., IMG-20211012-WA001, 2021_10_12_screenshot)
-        self.filename_date_patterns = [
-            re.compile(r'(20\d{2})[-_]?([01]\d)[-_]?([0-3]\d)'),  # Matches YYYYMMDD or YYYY-MM-DD or YYYY_MM_DD
-        ]
+        # Regex for Android/Pixel/Standard formats with Time (e.g., PXL_20260517_154036124, 2026-05-17 15.40.36)
+        self.regex_with_time = re.compile(r'(20\d{2})[-_]?([01]\d)[-_]?([0-3]\d)[-_T\s]?([0-2]\d)[-_. ]?([0-5]\d)[-_. ]?([0-5]\d)')
+        
+        # Regex fallback for Date only (e.g., IMG-20260517-WA0001)
+        self.regex_date_only = re.compile(r'(20\d{2})[-_]?([01]\d)[-_]?([0-3]\d)')
 
     def _get_exif_date(self, file_path: Path) -> str:
         """Extracts DateTimeOriginal from EXIF."""
@@ -44,14 +45,21 @@ class MetadataExtractor:
         return None
 
     def _get_regex_date(self, file_name: str) -> str:
-        """Extracts date from filename using regex."""
-        for pattern in self.filename_date_patterns:
-            match = pattern.search(file_name)
-            if match:
-                year, month, day = match.groups()
-                # Basic validation to avoid impossible dates
-                if 1 <= int(month) <= 12 and 1 <= int(day) <= 31:
-                    return f"{year}-{month}-{day} 00:00:00"
+        """Extracts date (and time if available) from filename using regex."""
+        # 1. Try to extract Date AND Time
+        match_time = self.regex_with_time.search(file_name)
+        if match_time:
+            year, month, day, hour, minute, second = match_time.groups()
+            if 1 <= int(month) <= 12 and 1 <= int(day) <= 31 and int(hour) < 24:
+                return f"{year}-{month}-{day} {hour}:{minute}:{second}"
+                
+        # 2. Fallback to Date only
+        match_date = self.regex_date_only.search(file_name)
+        if match_date:
+            year, month, day = match_date.groups()
+            if 1 <= int(month) <= 12 and 1 <= int(day) <= 31:
+                return f"{year}-{month}-{day} 00:00:00"
+                
         return None
 
     def _get_os_date(self, file_path: Path) -> str:
