@@ -7,7 +7,8 @@ logger = logging.getLogger(__name__)
 class ClustreeDB:
     def __init__(self, db_path="clustree.db"):
         self.db_path = Path(db_path)
-        self.conn = sqlite3.connect(self.db_path)
+        # check_same_thread=False allows our PyQt5 background workers to safely read/write
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._init_schema()
 
