@@ -2,7 +2,7 @@ import json
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.2.1"
 SETTINGS_PATH = Path("clustree_settings.json")
 
 CLUSTER_GAP_PRESETS = {
@@ -15,15 +15,26 @@ CLUSTER_GAP_PRESETS = {
 
 DEFAULT_PRESET_NAME = "Normal - 12 hours"
 
+RENAME_PATTERN_OPTIONS = {
+    "Clean sequence - 2026-05-12_sakura_001.jpg": "clean_sequence",
+    "Timestamp - 20260512_121459_sakura.jpg": "timestamp",
+    "Keep original - 20260512_121459_sakura_PXL_....jpg": "keep_original",
+}
+
+DEFAULT_RENAME_PATTERN = "clean_sequence"
+
 
 @dataclass
 class AppSettings:
     cluster_gap_preset: str = DEFAULT_PRESET_NAME
     cluster_gap_hours: int = 12
     thumbnail_size: int = 200
+    rename_pattern: str = DEFAULT_RENAME_PATTERN
 
     def normalize(self):
         """Keeps settings sane after loading older or hand-edited JSON."""
+
+        # Cluster gap preset / custom gap
         if self.cluster_gap_preset in CLUSTER_GAP_PRESETS:
             preset_value = CLUSTER_GAP_PRESETS[self.cluster_gap_preset]
             if preset_value is not None:
@@ -41,6 +52,7 @@ class AppSettings:
         elif self.cluster_gap_hours > 168:
             self.cluster_gap_hours = 168
 
+        # Thumbnail size
         try:
             self.thumbnail_size = int(self.thumbnail_size)
         except (TypeError, ValueError):
@@ -50,6 +62,11 @@ class AppSettings:
             self.thumbnail_size = 64
         elif self.thumbnail_size > 512:
             self.thumbnail_size = 512
+
+        # Rename pattern
+        valid_patterns = set(RENAME_PATTERN_OPTIONS.values())
+        if self.rename_pattern not in valid_patterns:
+            self.rename_pattern = DEFAULT_RENAME_PATTERN
 
         return self
 
@@ -62,7 +79,8 @@ def load_settings(path: Path = SETTINGS_PATH) -> AppSettings:
 
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-        settings = AppSettings(**{**asdict(AppSettings()), **raw}).normalize()
+        defaults = asdict(AppSettings())
+        settings = AppSettings(**{**defaults, **raw}).normalize()
     except Exception:
         settings = AppSettings().normalize()
 
@@ -76,3 +94,11 @@ def save_settings(settings: AppSettings, path: Path = SETTINGS_PATH):
         json.dumps(asdict(settings), indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
+
+
+def rename_pattern_label_from_value(value: str) -> str:
+    """Returns the human label for a stored rename pattern value."""
+    for label, stored_value in RENAME_PATTERN_OPTIONS.items():
+        if stored_value == value:
+            return label
+    return next(iter(RENAME_PATTERN_OPTIONS.keys()))

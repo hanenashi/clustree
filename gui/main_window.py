@@ -22,9 +22,11 @@ from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal
 from core.app_config import (
     APP_VERSION,
     CLUSTER_GAP_PRESETS,
+    RENAME_PATTERN_OPTIONS,
     AppSettings,
     load_settings,
     save_settings,
+    rename_pattern_label_from_value,
 )
 from core.crawler import Crawler
 from core.metadata import MetadataExtractor
@@ -32,14 +34,17 @@ from core.cluster import ClusterEngine
 
 
 class SettingsDialog(QDialog):
-    """Small settings pane for the first configurable Clustree options."""
+    """Small settings pane for configurable Clustree options."""
+
     def __init__(self, settings: AppSettings, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Clustree Settings")
+
         self.settings = AppSettings(
             cluster_gap_preset=settings.cluster_gap_preset,
             cluster_gap_hours=settings.cluster_gap_hours,
             thumbnail_size=settings.thumbnail_size,
+            rename_pattern=settings.rename_pattern,
         ).normalize()
 
         layout = QVBoxLayout(self)
@@ -55,6 +60,7 @@ class SettingsDialog(QDialog):
         preset_index = self.gap_preset_combo.findText(self.settings.cluster_gap_preset)
         if preset_index < 0:
             preset_index = self.gap_preset_combo.findText("Custom")
+
         self.gap_preset_combo.setCurrentIndex(preset_index)
         self.gap_preset_combo.currentTextChanged.connect(self.on_gap_preset_changed)
         form.addRow("Cluster gap preset:", self.gap_preset_combo)
@@ -72,6 +78,18 @@ class SettingsDialog(QDialog):
         self.thumbnail_size_spin.setValue(self.settings.thumbnail_size)
         form.addRow("Thumbnail size:", self.thumbnail_size_spin)
 
+        self.rename_pattern_combo = QComboBox()
+        for label in RENAME_PATTERN_OPTIONS.keys():
+            self.rename_pattern_combo.addItem(label)
+
+        current_label = rename_pattern_label_from_value(self.settings.rename_pattern)
+        pattern_index = self.rename_pattern_combo.findText(current_label)
+        if pattern_index < 0:
+            pattern_index = 0
+
+        self.rename_pattern_combo.setCurrentIndex(pattern_index)
+        form.addRow("Rename pattern:", self.rename_pattern_combo)
+
         layout.addLayout(form)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -84,30 +102,39 @@ class SettingsDialog(QDialog):
     def on_gap_preset_changed(self, preset_name):
         preset_value = CLUSTER_GAP_PRESETS.get(preset_name)
         is_custom = preset_value is None
+
         self.gap_hours_spin.setEnabled(is_custom)
+
         if preset_value is not None:
             self.gap_hours_spin.setValue(preset_value)
 
     def get_settings(self) -> AppSettings:
         preset_name = self.gap_preset_combo.currentText()
+        rename_label = self.rename_pattern_combo.currentText()
+
         return AppSettings(
             cluster_gap_preset=preset_name,
             cluster_gap_hours=self.gap_hours_spin.value(),
             thumbnail_size=self.thumbnail_size_spin.value(),
+            rename_pattern=RENAME_PATTERN_OPTIONS.get(rename_label, "clean_sequence"),
         ).normalize()
 
 
 class PlanPreviewDialog(QDialog):
     """Read-only dry-run preview window."""
+
     def __init__(self, plan, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Preview Move Plan")
         self.resize(900, 650)
 
         layout = QVBoxLayout(self)
+
         summary = QLabel(
             f"Plan file: {plan.get('plan_path', '(not saved)')}\n"
-            f"Clusters: {len(plan.get('clusters', []))} | Moves: {len(plan.get('moves', []))} | "
+            f"Rename pattern: {plan.get('rename_pattern_label', '(unknown)')}\n"
+            f"Clusters: {len(plan.get('clusters', []))} | "
+            f"Moves: {len(plan.get('moves', []))} | "
             f"Warnings: {len(plan.get('warnings', []))}"
         )
         layout.addWidget(summary)
@@ -127,9 +154,10 @@ class PlanPreviewDialog(QDialog):
         lines.append("=" * 80)
         lines.append(f"Created: {plan.get('created_at')}")
         lines.append(f"Version: {plan.get('app_version')}")
+        lines.append(f"Rename pattern: {plan.get('rename_pattern_label', plan.get('rename_pattern'))}")
         lines.append("")
 
-        warnings_list = plan.get('warnings', [])
+        warnings_list = plan.get("warnings", [])
         if warnings_list:
             lines.append("WARNINGS")
             lines.append("-" * 80)
@@ -139,13 +167,14 @@ class PlanPreviewDialog(QDialog):
 
         lines.append("MOVES")
         lines.append("-" * 80)
-        for move in plan.get('moves', []):
+
+        for move in plan.get("moves", []):
             lines.append(f"Cluster {move['cluster_id']} | {move['event_name']}")
             lines.append(f"FROM: {move['from']}")
             lines.append(f"TO:   {move['to']}")
             lines.append("")
 
-        if not plan.get('moves'):
+        if not plan.get("moves"):
             lines.append("No moves planned. Name some clusters first. The goblin waits.")
 
         return "\n".join(lines)
@@ -153,6 +182,7 @@ class PlanPreviewDialog(QDialog):
 
 class IngestionWorker(QThread):
     """Background thread to run the 3-phase engine without freezing the GUI."""
+
     finished = pyqtSignal()
 
     def __init__(self, db, target_dir, cluster_gap_hours=12):
@@ -176,6 +206,7 @@ class IngestionWorker(QThread):
 
 class ThumbnailWorker(QThread):
     """Background thread to safely load and scale images without freezing the UI."""
+
     progress = pyqtSignal(int)
     thumb_ready = pyqtSignal(str, str, QImage)
     finished = pyqtSignal()
@@ -191,10 +222,10 @@ class ThumbnailWorker(QThread):
             if not self.is_running:
                 break
 
-            file_path = f['original_path']
+            file_path = f["original_path"]
             file_name = Path(file_path).name
 
-            if file_path.lower().endswith(('.jpg', '.jpeg', '.png')):
+            if file_path.lower().endswith((".jpg", ".jpeg", ".png")):
                 img = QImage(file_path)
                 img = img.scaled(
                     self.thumbnail_size,
@@ -216,6 +247,7 @@ class ThumbnailWorker(QThread):
 
 class ClusterListWidget(QListWidget):
     """Custom ListWidget for the sidebar to handle drag-and-drop reassignment."""
+
     file_reassigned = pyqtSignal(str, int)  # Emits: file_path, new_cluster_id
 
     def __init__(self):
@@ -236,6 +268,7 @@ class ClusterListWidget(QListWidget):
 
     def dropEvent(self, event):
         target_item = self.itemAt(event.pos())
+
         if not target_item or event.source() == self:
             event.ignore()
             return
@@ -254,11 +287,14 @@ class ClusterListWidget(QListWidget):
 class ClustreeWindow(QMainWindow):
     def __init__(self, db):
         super().__init__()
+
         self.db = db
         self.settings = load_settings()
         self.current_move_plan = None
+
         self.setWindowTitle(f"Clustree {APP_VERSION} - Triage")
         self.resize(1200, 800)
+
         self.current_cluster_id = None
         self.thumb_worker = None
         self.ingestion_worker = None
@@ -295,6 +331,7 @@ class ClustreeWindow(QMainWindow):
         right_panel = QVBoxLayout()
 
         self.grid_header = QLabel("<b>Select a cluster to view media...</b>")
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setFixedHeight(10)
         self.progress_bar.setTextVisible(False)
@@ -310,6 +347,7 @@ class ClustreeWindow(QMainWindow):
         self.thumbnail_grid.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
 
         name_layout = QHBoxLayout()
+
         self.rename_input = QLineEdit()
         self.rename_input.setPlaceholderText("Event name for selected cluster (saved only, no moving)...")
         self.rename_input.returnPressed.connect(self.save_cluster_name)
@@ -323,6 +361,7 @@ class ClustreeWindow(QMainWindow):
         name_layout.addWidget(self.save_name_btn)
 
         plan_layout = QHBoxLayout()
+
         self.preview_btn = QPushButton("Preview Plan")
         self.preview_btn.clicked.connect(self.preview_move_plan)
 
@@ -340,13 +379,19 @@ class ClustreeWindow(QMainWindow):
         right_panel.addLayout(plan_layout)
 
         main_layout.addLayout(right_panel)
+
         self.statusBar()
         self.update_status()
         self.load_clusters()
 
     def update_status(self, message="Ready"):
+        pattern_label = rename_pattern_label_from_value(self.settings.rename_pattern).split(" - ")[0]
+
         self.statusBar().showMessage(
-            f"{message} | Clustree {APP_VERSION} | Gap: {self.settings.cluster_gap_hours}h | Thumb: {self.settings.thumbnail_size}px"
+            f"{message} | Clustree {APP_VERSION} | "
+            f"Gap: {self.settings.cluster_gap_hours}h | "
+            f"Thumb: {self.settings.thumbnail_size}px | "
+            f"Rename: {pattern_label}"
         )
 
     def invalidate_plan(self):
@@ -355,11 +400,13 @@ class ClustreeWindow(QMainWindow):
 
     def open_settings(self):
         dialog = SettingsDialog(self.settings, self)
+
         if dialog.exec_() != QDialog.Accepted:
             return
 
         self.settings = dialog.get_settings()
         save_settings(self.settings)
+
         self.thumbnail_grid.setIconSize(QSize(self.settings.thumbnail_size, self.settings.thumbnail_size))
         self.invalidate_plan()
         self.update_status("Settings saved")
@@ -367,12 +414,23 @@ class ClustreeWindow(QMainWindow):
     def handle_file_reassigned(self, file_path, new_cluster_id):
         """Updates the DB when a thumbnail is dropped onto a new cluster."""
         cursor = self.db.conn.cursor()
-        cursor.execute("UPDATE files SET cluster_id = ? WHERE original_path = ?", (new_cluster_id, file_path))
+        cursor.execute(
+            "UPDATE files SET cluster_id = ? WHERE original_path = ?",
+            (new_cluster_id, file_path),
+        )
 
-        cursor.execute('''
+        cursor.execute(
+            """
             UPDATE clusters
-            SET file_count = (SELECT COUNT(id) FROM files WHERE files.cluster_id = clusters.id AND files.status != 'archived')
-        ''')
+            SET file_count = (
+                SELECT COUNT(id)
+                FROM files
+                WHERE files.cluster_id = clusters.id
+                  AND files.status != 'archived'
+            )
+            """
+        )
+
         self.db.conn.commit()
 
         self.invalidate_plan()
@@ -381,16 +439,20 @@ class ClustreeWindow(QMainWindow):
 
     def select_and_scan_folder(self):
         target_dir = QFileDialog.getExistingDirectory(self, "Select Directory to Ingest")
+
         if not target_dir:
             return
 
         self.invalidate_plan()
+
         self.scan_btn.setEnabled(False)
         self.scan_btn.setText("Scanning...")
         self.settings_btn.setEnabled(False)
         self.preview_btn.setEnabled(False)
+
         self.grid_header.setText("<b>Engine running. Check terminal for live progress...</b>")
         self.thumbnail_grid.clear()
+
         self.update_status(f"Scanning with {self.settings.cluster_gap_hours}h cluster gap")
 
         self.ingestion_worker = IngestionWorker(
@@ -405,27 +467,33 @@ class ClustreeWindow(QMainWindow):
         self.scan_btn.setEnabled(True)
         self.settings_btn.setEnabled(True)
         self.preview_btn.setEnabled(True)
+
         self.scan_btn.setText("Scan Folder...")
         self.grid_header.setText("<b>Scan complete! Select a cluster on the left.</b>")
+
         self.load_clusters()
         self.update_status("Scan complete")
 
     def load_clusters(self):
         self.cluster_list.clear()
+
         cursor = self.db.conn.cursor()
-        cursor.execute('''
+        cursor.execute(
+            """
             SELECT id, start_date, file_count, assigned_name
             FROM clusters
-            WHERE status != 'archived' AND file_count > 0
+            WHERE status != 'archived'
+              AND file_count > 0
             ORDER BY start_date ASC
-        ''')
+            """
+        )
         clusters = cursor.fetchall()
 
         for cluster in clusters:
-            cid = cluster['id']
-            date = cluster['start_date'].split(' ')[0]
-            count = cluster['file_count']
-            name = (cluster['assigned_name'] or "").strip()
+            cid = cluster["id"]
+            date = cluster["start_date"].split(" ")[0]
+            count = cluster["file_count"]
+            name = (cluster["assigned_name"] or "").strip()
             name_line = f"Name: {name}" if name else "Name: (unnamed)"
 
             item = QListWidgetItem(f"Event {cid} ({date})\n[{count} files] | {name_line}")
@@ -441,18 +509,32 @@ class ClustreeWindow(QMainWindow):
         self.current_cluster_id = item.data(Qt.ItemDataRole.UserRole)
 
         cursor = self.db.conn.cursor()
-        cursor.execute("SELECT assigned_name FROM clusters WHERE id = ?", (self.current_cluster_id,))
-        cluster = cursor.fetchone()
-        assigned_name = (cluster['assigned_name'] or "") if cluster else ""
 
-        cursor.execute("SELECT original_path FROM files WHERE cluster_id = ? ORDER BY computed_date ASC", (self.current_cluster_id,))
+        cursor.execute(
+            "SELECT assigned_name FROM clusters WHERE id = ?",
+            (self.current_cluster_id,),
+        )
+        cluster = cursor.fetchone()
+        assigned_name = (cluster["assigned_name"] or "") if cluster else ""
+
+        cursor.execute(
+            """
+            SELECT original_path
+            FROM files
+            WHERE cluster_id = ?
+            ORDER BY computed_date ASC
+            """,
+            (self.current_cluster_id,),
+        )
         files = cursor.fetchall()
 
         self.grid_header.setText(f"<b>Viewing Event {self.current_cluster_id} ({len(files)} files)</b>")
+
         self.rename_input.setEnabled(True)
         self.save_name_btn.setEnabled(True)
         self.rename_input.setText(assigned_name)
         self.rename_input.setFocus()
+
         self.update_status(f"Viewing Event {self.current_cluster_id}")
 
         self.progress_bar.setMaximum(len(files))
@@ -476,6 +558,7 @@ class ClustreeWindow(QMainWindow):
 
         thumb_item.setToolTip(file_name)
         thumb_item.setData(Qt.ItemDataRole.UserRole, file_path)
+
         self.thumbnail_grid.addItem(thumb_item)
 
     def save_cluster_name(self):
@@ -483,22 +566,53 @@ class ClustreeWindow(QMainWindow):
             return
 
         event_name = self.rename_input.text().strip()
+
         cursor = self.db.conn.cursor()
         cursor.execute(
             "UPDATE clusters SET assigned_name = ? WHERE id = ?",
             (event_name or None, self.current_cluster_id),
         )
         self.db.conn.commit()
+
         self.invalidate_plan()
         self.load_clusters()
         self.update_status(f"Saved name for Event {self.current_cluster_id}")
 
     def _safe_event_name(self, event_name):
         """Creates a filesystem-friendly event name while keeping it readable."""
-        safe_name = re.sub(r'[<>:"\\|?*/]+', '-', event_name.strip())
-        safe_name = re.sub(r'\s+', '_', safe_name)
-        safe_name = safe_name.strip(' ._-')
+        safe_name = re.sub(r'[<>:"\\|?*/]+', "-", event_name.strip())
+        safe_name = re.sub(r"\s+", "_", safe_name)
+        safe_name = safe_name.strip(" ._-")
+
         return safe_name or "Unnamed_Event"
+
+    def _build_output_filename(self, old_path: Path, computed_date: str, safe_name: str, sequence_number: int) -> str:
+        """
+        Builds the output filename according to the selected rename pattern.
+
+        clean_sequence:
+            2026-05-12_sakura_001.jpg
+
+        timestamp:
+            20260512_121459_sakura.jpg
+
+        keep_original:
+            20260512_121459_sakura_PXL_20260512_031459393.jpg
+        """
+        suffix = old_path.suffix
+        computed_date = computed_date or "1970-01-01 00:00:00"
+
+        date_part = computed_date.split(" ")[0]
+        timestamp_part = computed_date.replace("-", "").replace(":", "").replace(" ", "_")
+
+        if self.settings.rename_pattern == "timestamp":
+            return f"{timestamp_part}_{safe_name}{suffix}"
+
+        if self.settings.rename_pattern == "keep_original":
+            return f"{timestamp_part}_{safe_name}_{old_path.name}"
+
+        # Default: clean human-friendly sequence.
+        return f"{date_part}_{safe_name}_{sequence_number:03d}{suffix}"
 
     def _unique_planned_path(self, path: Path, reserved_paths: set) -> Path:
         """Returns a non-existing/non-reserved path by appending _2, _3, etc. if needed."""
@@ -517,7 +631,8 @@ class ClustreeWindow(QMainWindow):
 
     def build_move_plan(self):
         cursor = self.db.conn.cursor()
-        cursor.execute('''
+        cursor.execute(
+            """
             SELECT id, start_date, assigned_name
             FROM clusters
             WHERE status != 'archived'
@@ -525,12 +640,15 @@ class ClustreeWindow(QMainWindow):
               AND assigned_name IS NOT NULL
               AND TRIM(assigned_name) != ''
             ORDER BY start_date ASC
-        ''')
+            """
+        )
         clusters = cursor.fetchall()
 
         plan = {
             "app_version": APP_VERSION,
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "rename_pattern": self.settings.rename_pattern,
+            "rename_pattern_label": rename_pattern_label_from_value(self.settings.rename_pattern),
             "plan_path": None,
             "clusters": [],
             "moves": [],
@@ -540,69 +658,90 @@ class ClustreeWindow(QMainWindow):
         reserved_paths = set()
 
         for cluster in clusters:
-            cluster_id = cluster['id']
-            event_name = cluster['assigned_name'].strip()
+            cluster_id = cluster["id"]
+            event_name = cluster["assigned_name"].strip()
             safe_name = self._safe_event_name(event_name)
 
-            cursor.execute('''
+            cursor.execute(
+                """
                 SELECT id, original_path, computed_date
                 FROM files
-                WHERE cluster_id = ? AND status != 'archived'
+                WHERE cluster_id = ?
+                  AND status != 'archived'
                 ORDER BY computed_date ASC
-            ''', (cluster_id,))
+                """,
+                (cluster_id,),
+            )
             files = cursor.fetchall()
 
             if not files:
-                plan['warnings'].append(f"Cluster {cluster_id} has a name but no movable files.")
+                plan["warnings"].append(f"Cluster {cluster_id} has a name but no movable files.")
                 continue
 
-            first_date = (files[0]['computed_date'] or cluster['start_date']).split(' ')[0]
-            target_dir = Path(files[0]['original_path']).parent.parent / f"{first_date}_{safe_name}"
+            first_date = (files[0]["computed_date"] or cluster["start_date"]).split(" ")[0]
+            target_dir = Path(files[0]["original_path"]).parent.parent / f"{first_date}_{safe_name}"
 
-            plan['clusters'].append({
-                "cluster_id": cluster_id,
-                "event_name": event_name,
-                "safe_name": safe_name,
-                "target_dir": str(target_dir),
-                "file_count": len(files),
-            })
+            plan["clusters"].append(
+                {
+                    "cluster_id": cluster_id,
+                    "event_name": event_name,
+                    "safe_name": safe_name,
+                    "target_dir": str(target_dir),
+                    "file_count": len(files),
+                }
+            )
 
-            for f in files:
-                old_path = Path(f['original_path'])
-                computed_date = f['computed_date'] or cluster['start_date']
-                date_compact = computed_date.replace("-", "").replace(":", "").replace(" ", "_")
-                new_filename = f"{date_compact}_{safe_name}_{old_path.name}"
+            for sequence_number, f in enumerate(files, start=1):
+                old_path = Path(f["original_path"])
+                computed_date = f["computed_date"] or cluster["start_date"]
+
+                new_filename = self._build_output_filename(
+                    old_path=old_path,
+                    computed_date=computed_date,
+                    safe_name=safe_name,
+                    sequence_number=sequence_number,
+                )
                 new_path = self._unique_planned_path(target_dir / new_filename, reserved_paths)
 
                 if not old_path.exists():
-                    plan['warnings'].append(f"Missing source file: {old_path}")
+                    plan["warnings"].append(f"Missing source file: {old_path}")
 
-                plan['moves'].append({
-                    "file_id": f['id'],
-                    "cluster_id": cluster_id,
-                    "event_name": event_name,
-                    "from": str(old_path),
-                    "to": str(new_path),
-                })
+                plan["moves"].append(
+                    {
+                        "file_id": f["id"],
+                        "cluster_id": cluster_id,
+                        "event_name": event_name,
+                        "from": str(old_path),
+                        "to": str(new_path),
+                    }
+                )
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         plan_path = Path(f"clustree_move_plan_{timestamp}.json")
-        plan['plan_path'] = str(plan_path)
-        plan_path.write_text(json.dumps(plan, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        plan["plan_path"] = str(plan_path)
+
+        plan_path.write_text(
+            json.dumps(plan, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
         return plan
 
     def preview_move_plan(self):
         self.save_cluster_name()
+
         plan = self.build_move_plan()
         self.current_move_plan = plan
-        self.run_plan_btn.setEnabled(bool(plan.get('moves')))
+
+        self.run_plan_btn.setEnabled(bool(plan.get("moves")))
         self.update_status(f"Preview ready: {len(plan.get('moves', []))} moves")
 
         dialog = PlanPreviewDialog(plan, self)
         dialog.exec_()
 
     def run_move_plan(self):
-        if not self.current_move_plan or not self.current_move_plan.get('moves'):
+        if not self.current_move_plan or not self.current_move_plan.get("moves"):
             QMessageBox.information(self, "No Plan", "Preview a move plan first.")
             return
 
@@ -613,6 +752,7 @@ class ClustreeWindow(QMainWindow):
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
+
         if reply != QMessageBox.Yes:
             return
 
@@ -622,19 +762,23 @@ class ClustreeWindow(QMainWindow):
         touched_clusters = set()
 
         try:
-            for move in self.current_move_plan['moves']:
-                file_id = move['file_id']
-                old_path = Path(move['from'])
-                new_path = Path(move['to'])
-                touched_clusters.add(move['cluster_id'])
+            for move in self.current_move_plan["moves"]:
+                file_id = move["file_id"]
+                old_path = Path(move["from"])
+                new_path = Path(move["to"])
+                touched_clusters.add(move["cluster_id"])
 
                 if not old_path.exists():
                     missing += 1
-                    cursor.execute("UPDATE files SET status = 'missing' WHERE id = ?", (file_id,))
+                    cursor.execute(
+                        "UPDATE files SET status = 'missing' WHERE id = ?",
+                        (file_id,),
+                    )
                     continue
 
                 new_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(old_path), str(new_path))
+
                 cursor.execute(
                     "UPDATE files SET original_path = ?, status = 'archived' WHERE id = ?",
                     (str(new_path), file_id),
@@ -642,21 +786,36 @@ class ClustreeWindow(QMainWindow):
                 moved += 1
 
             for cluster_id in touched_clusters:
-                cursor.execute("UPDATE clusters SET status = 'archived' WHERE id = ?", (cluster_id,))
+                cursor.execute(
+                    "UPDATE clusters SET status = 'archived' WHERE id = ?",
+                    (cluster_id,),
+                )
 
             self.db.conn.commit()
+
             self.current_move_plan = None
             self.run_plan_btn.setEnabled(False)
+
             self.thumbnail_grid.clear()
             self.rename_input.clear()
             self.rename_input.setEnabled(False)
             self.save_name_btn.setEnabled(False)
             self.current_cluster_id = None
+
             self.load_clusters()
             self.update_status(f"Run complete: {moved} moved, {missing} missing")
-            QMessageBox.information(self, "Run Complete", f"Moved: {moved}\nMissing: {missing}")
+
+            QMessageBox.information(
+                self,
+                "Run Complete",
+                f"Moved: {moved}\nMissing: {missing}",
+            )
 
         except Exception as e:
             self.db.conn.rollback()
             self.update_status("Run failed")
-            QMessageBox.critical(self, "Error Running Plan", f"An error occurred: {str(e)}")
+            QMessageBox.critical(
+                self,
+                "Error Running Plan",
+                f"An error occurred: {str(e)}",
+            )
