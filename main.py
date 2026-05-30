@@ -4,6 +4,7 @@ from pathlib import Path
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QListWidget, QListWidgetItem, QLabel, QProgressBar,
                              QLineEdit, QPushButton, QMessageBox)
+warnings.filterwarnings("ignore", message="sipPyTypeDict.. is deprecated")
 from PyQt5.QtGui import QPixmap, QIcon, QImage
 from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal
 
