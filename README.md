@@ -30,9 +30,18 @@ Implemented now:
 - Rebuildable cluster generation without stale duplicate cluster piles.
 - PyQt thumbnail triage UI.
 - Drag thumbnails between detected events.
-- Rename / commit an event into a dated folder.
+- App version constant and visible version/status bar.
+- Settings pane.
+- Settings saved to `clustree_settings.json`.
+- Configurable cluster gap presets.
+- Configurable thumbnail size.
+- Cluster names saved to the database without moving files immediately.
+- Cluster list shows saved names.
+- Dry-run move plan preview.
+- Move plan JSON export as `clustree_move_plan_YYYYMMDD_HHMMSS.json`.
+- `Run Plan` button that executes the latest previewed plan.
 - Collision-safe move names using `_2`, `_3`, etc.
-- Basic missing-file handling during commit.
+- Basic missing-file handling during plan execution.
 
 Still rough / not done yet:
 
@@ -40,15 +49,15 @@ Still rough / not done yet:
 - Video thumbnails are placeholders only.
 - No ffprobe video creation-time extraction yet.
 - Duplicate files are marked in DB, but not yet moved into a separate trash folder.
-- No dry-run / undo move plan yet.
-- Cluster gap is still hardcoded to 12 hours in the GUI worker.
+- No undo / rollback from executed plan yet.
+- Manual split/merge UI is not implemented yet.
 - UI is functional, not pretty. Which is fine. Pretty can wait in line.
 
 ---
 
 ## Architecture
 
-Clustree is split into four practical parts:
+Clustree is split into five practical parts:
 
 ### 1. Crawler
 
@@ -100,7 +109,36 @@ Current speed settings:
 - larger SQLite cache.
 - indexes for hash, size, status, cluster ID, and computed date.
 
-### 3. Metadata extractor
+### 3. Settings and version config
+
+Located in `core/app_config.py`.
+
+Current settings:
+
+- app version: `0.2.0`
+- cluster gap preset
+- cluster gap hours
+- thumbnail size
+
+Settings are stored locally in:
+
+```text
+clustree_settings.json
+```
+
+This file is ignored by Git because it is local runtime state, not project code.
+
+Cluster gap presets:
+
+```text
+Tight - 3 hours
+Normal - 12 hours
+Travel - 36 hours
+Vacation blob - 72 hours
+Custom
+```
+
+### 4. Metadata extractor
 
 Located in `core/metadata.py`.
 
@@ -120,7 +158,7 @@ IMG-20260517-WA0001.jpg
 
 Video metadata is not deeply parsed yet. For videos, filename or OS date is usually what you get for now.
 
-### 4. Cluster engine
+### 5. Cluster engine
 
 Located in `core/cluster.py`.
 
@@ -129,26 +167,30 @@ The cluster engine sorts dated, non-duplicate files by computed time and groups 
 Current logic:
 
 ```text
-If the gap between two files is <= 12 hours, keep them in the same event.
+If the gap between two files is <= selected cluster gap, keep them in the same event.
 If the gap is larger, start a new event.
 ```
 
 Before rebuilding clusters, Clustree now deletes non-archived old clusters and resets previously clustered files back to `dated`. That prevents repeated scans from creating duplicate ghost events. Ghost events are rude.
 
-### 5. GUI triage app
+### 6. GUI triage app
 
 Located in `gui/main_window.py`.
 
 The GUI lets you:
 
 - pick a folder to scan
+- open settings
+- choose cluster gap preset
+- choose thumbnail size
 - see detected events on the left
 - click an event to load thumbnails
 - drag selected files into another event
-- type an event name
-- commit/move the event into a dated folder
+- save an event name without moving files
+- preview a batch move plan for all named clusters
+- run the previewed plan after confirmation
 
-Current commit output folder pattern:
+Current output folder pattern:
 
 ```text
 YYYY-MM-DD_Event_Name
@@ -173,7 +215,7 @@ Typical setup:
 ```bash
 python -m venv .venv
 .venv\Scripts\activate
-pip install PyQt5 Pillow piexif
+pip install -r requirements.txt
 python main.py
 ```
 
@@ -194,10 +236,13 @@ Recommended test flow:
 1. Make a small copied test folder.
 2. Include a few JPEGs, PNGs, MP4s, and deliberate duplicates.
 3. Run Clustree on that copy.
-4. Check clustering and moved output.
-5. Only then try bigger folders.
+4. Save names for a few clusters.
+5. Click `Preview Plan` and inspect the planned moves.
+6. Only if the preview looks sane, click `Run Plan`.
+7. Check moved output.
+8. Only then try bigger folders.
 
-Clustree moves files when committing an event. It is not an image viewer toy; it has boots.
+Clustree moves files only when `Run Plan` is confirmed. Still: copied test folder first. Memories are not scratch files.
 
 ---
 
@@ -216,84 +261,65 @@ Mark exact duplicates
    ↓
 Extract timeline date
    ↓
-Build time-gap clusters
+Build time-gap clusters using selected gap setting
    ↓
 Triage in GUI
    ↓
-Name event
+Save names to clusters
    ↓
-Move files into dated folder
+Preview move plan
+   ↓
+Run move plan
+   ↓
+Move files into dated folders
 ```
 
 ---
 
 ## Roadmap
 
-The next direction is to turn Clustree from a one-cluster-at-a-time mover into a safer triage queue.
+The next direction is to keep pushing Clustree toward a safer triage queue with manual control.
 
 ### 0.2.0 - Settings and version foundation
 
-- Add a single app version constant.
-- Show version in the window title and/or status bar.
-- Add a settings pane.
-- Save settings to `clustree_settings.json`.
-- Move cluster gap from hardcoded value into settings.
-- Add cluster gap presets:
+Implemented:
+
+- App version constant.
+- Version shown at startup, in window title, in settings, and in status bar.
+- Settings pane.
+- Settings saved to `clustree_settings.json`.
+- Cluster gap moved from hardcoded value into settings.
+- Cluster gap presets:
   - Tight: 3 hours
   - Normal: 12 hours
   - Travel: 36 hours
   - Vacation blob: 72 hours
   - Custom: user-defined hours
-- Show active cluster gap in the status bar.
+- Active cluster gap shown in the status bar.
+- Thumbnail size setting.
 
-### 0.3.0 - Triage queue workflow
+### 0.3.0 / 0.4.0 - Triage queue and dry-run move plan
 
-Current behavior moves files too soon. The planned workflow is safer:
+Implemented first pass:
 
-```text
-scan
-   ↓
-clusters appear
-   ↓
-user names clusters in the list
-   ↓
-user splits / merges / drags files as needed
-   ↓
-Preview Plan
-   ↓
-Run Plan
-```
-
-Planned changes:
-
-- Naming a cluster should only save `assigned_name` in the database.
-- Pressing Enter in the name field should not move files.
-- Add cluster names directly to the cluster list display.
-- Add `Save Name`, `Preview Plan`, and `Run Plan` buttons.
-- Keep `Run Plan` disabled until a dry-run preview exists.
-- Support a full batch plan for all named clusters, not only the currently selected cluster.
-
-### 0.4.0 - Dry-run move plan
-
-Before moving anything, Clustree should build and preview a move plan.
-
-Plan output should include:
-
-- source path
-- target path
-- cluster ID
-- assigned event name
-- missing-file warnings
-- duplicate warnings
-- filename collision resolutions
-
-Potential plan file:
+- Naming a cluster only saves `assigned_name` in the database.
+- Pressing Enter in the name field saves the name, but does not move files.
+- Cluster names are shown directly in the cluster list.
+- Added `Save Name`, `Preview Plan`, and `Run Plan` buttons.
+- `Run Plan` stays disabled until a dry-run preview exists.
+- Preview supports a full batch plan for all named active clusters.
+- Preview writes a JSON plan file:
 
 ```text
 clustree_move_plan_YYYYMMDD_HHMMSS.json
 ```
 
-The preview should make it obvious what will happen before files move. No surprise bulldozer.
+Still needed:
+
+- Better plan preview table UI instead of plain text.
+- Executed-plan archive.
+- Undo / rollback support.
+- Dry-run-only mode.
 
 ### 0.5.0 - Manual cluster editing
 
@@ -322,7 +348,6 @@ Planned cluster-list context menu:
 - Reuse cached thumbnails when reopening a cluster.
 - Add real video thumbnails via ffmpeg.
 - Add video creation-time extraction via ffprobe.
-- Add thumbnail size setting.
 - Consider faster preview scaling while loading, then nicer scaling when idle.
 
 ### 0.7.0 - Duplicate handling
@@ -337,7 +362,6 @@ Planned cluster-list context menu:
 - Add undo / recovery log.
 - Save executed move plan.
 - Support rollback from executed plan where possible.
-- Add dry-run-only mode.
 - Add output destination selector.
 - Add clear warning before moving real files.
 
@@ -371,4 +395,4 @@ Clustree is currently useful for testing and controlled real-world cleanup runs 
 
 It is not yet at the “trust it with the only copy of 15 years of family photos” stage.
 
-That stage requires dry-run plans, undo logs, thumbnail caching, and more abuse testing. The goblin is awake, but not yet house-trained.
+That stage requires undo logs, thumbnail caching, manual split/merge, and more abuse testing. The goblin is awake, and now at least has brakes.
