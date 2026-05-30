@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QListWidget, QListWidgetItem, QLabel, QProgressBar,
     QLineEdit, QPushButton, QMessageBox, QFileDialog,
     QDialog, QFormLayout, QComboBox, QSpinBox, QDialogButtonBox,
-    QPlainTextEdit
+    QPlainTextEdit, QMenu
 )
 
 # Silence the High Sierra SIP deprecation warning
@@ -208,7 +208,7 @@ class ThumbnailWorker(QThread):
     """Background thread to safely load and scale images without freezing the UI."""
 
     progress = pyqtSignal(int)
-    thumb_ready = pyqtSignal(str, str, QImage)
+    thumb_ready = pyqtSignal(int, str, str, QImage)
     finished = pyqtSignal()
 
     def __init__(self, files, thumbnail_size=200):
@@ -222,6 +222,7 @@ class ThumbnailWorker(QThread):
             if not self.is_running:
                 break
 
+            file_id = f["id"]
             file_path = f["original_path"]
             file_name = Path(file_path).name
 
@@ -233,9 +234,9 @@ class ThumbnailWorker(QThread):
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
                 )
-                self.thumb_ready.emit(file_path, file_name, img)
+                self.thumb_ready.emit(file_id, file_path, file_name, img)
             else:
-                self.thumb_ready.emit(file_path, file_name, QImage())
+                self.thumb_ready.emit(file_id, file_path, file_name, QImage())
 
             self.progress.emit(i + 1)
 
@@ -277,7 +278,16 @@ class ClusterListWidget(QListWidget):
         source_widget = event.source()
 
         for item in source_widget.selectedItems():
-            file_path = item.data(Qt.ItemDataRole.UserRole)
+            payload = item.data(Qt.ItemDataRole.UserRole)
+
+            if isinstance(payload, dict):
+                file_path = payload.get("path")
+            else:
+                file_path = payload
+
+            if not file_path:
+                continue
+
             self.file_reassigned.emit(file_path, new_cluster_id)
             source_widget.takeItem(source_widget.row(item))
 
@@ -345,6 +355,8 @@ class ClustreeWindow(QMainWindow):
         self.thumbnail_grid.setDragEnabled(True)
         self.thumbnail_grid.setAcceptDrops(False)
         self.thumbnail_grid.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self.thumbnail_grid.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.thumbnail_grid.customContextMenuRequested.connect(self.show_thumbnail_context_menu)
 
         name_layout = QHBoxLayout()
 
@@ -419,18 +431,7 @@ class ClustreeWindow(QMainWindow):
             (new_cluster_id, file_path),
         )
 
-        cursor.execute(
-            """
-            UPDATE clusters
-            SET file_count = (
-                SELECT COUNT(id)
-                FROM files
-                WHERE files.cluster_id = clusters.id
-                  AND files.status != 'archived'
-            )
-            """
-        )
-
+        self._recalculate_all_cluster_counts(cursor)
         self.db.conn.commit()
 
         self.invalidate_plan()
@@ -491,7 +492,7 @@ class ClustreeWindow(QMainWindow):
 
         for cluster in clusters:
             cid = cluster["id"]
-            date = cluster["start_date"].split(" ")[0]
+            date = cluster["start_date"].split(" ")[0] if cluster["start_date"] else "unknown-date"
             count = cluster["file_count"]
             name = (cluster["assigned_name"] or "").strip()
             name_line = f"Name: {name}" if name else "Name: (unnamed)"
@@ -501,12 +502,16 @@ class ClustreeWindow(QMainWindow):
             self.cluster_list.addItem(item)
 
     def start_loading_cluster(self, item):
+        cluster_id = item.data(Qt.ItemDataRole.UserRole)
+        self.load_cluster_by_id(cluster_id)
+
+    def load_cluster_by_id(self, cluster_id):
         if self.thumb_worker and self.thumb_worker.isRunning():
             self.thumb_worker.stop()
             self.thumb_worker.wait()
 
         self.thumbnail_grid.clear()
-        self.current_cluster_id = item.data(Qt.ItemDataRole.UserRole)
+        self.current_cluster_id = cluster_id
 
         cursor = self.db.conn.cursor()
 
@@ -519,10 +524,11 @@ class ClustreeWindow(QMainWindow):
 
         cursor.execute(
             """
-            SELECT original_path
+            SELECT id, original_path
             FROM files
             WHERE cluster_id = ?
-            ORDER BY computed_date ASC
+              AND status != 'archived'
+            ORDER BY computed_date ASC, id ASC
             """,
             (self.current_cluster_id,),
         )
@@ -547,7 +553,7 @@ class ClustreeWindow(QMainWindow):
         self.thumb_worker.finished.connect(self.progress_bar.hide)
         self.thumb_worker.start()
 
-    def add_thumbnail(self, file_path, file_name, qimage):
+    def add_thumbnail(self, file_id, file_path, file_name, qimage):
         thumb_item = QListWidgetItem()
 
         if not qimage.isNull():
@@ -557,9 +563,211 @@ class ClustreeWindow(QMainWindow):
             thumb_item.setText("Video File")
 
         thumb_item.setToolTip(file_name)
-        thumb_item.setData(Qt.ItemDataRole.UserRole, file_path)
+        thumb_item.setData(
+            Qt.ItemDataRole.UserRole,
+            {
+                "id": file_id,
+                "path": file_path,
+                "name": file_name,
+            },
+        )
 
         self.thumbnail_grid.addItem(thumb_item)
+
+    def show_thumbnail_context_menu(self, pos):
+        item = self.thumbnail_grid.itemAt(pos)
+
+        if not item or not self.current_cluster_id:
+            return
+
+        payload = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(payload, dict):
+            return
+
+        file_id = payload.get("id")
+        file_name = payload.get("name", "this photo")
+
+        if not file_id:
+            return
+
+        menu = QMenu(self)
+
+        split_before_action = menu.addAction(f"Split before {file_name}")
+        split_after_action = menu.addAction(f"Split after {file_name}")
+
+        action = menu.exec_(self.thumbnail_grid.mapToGlobal(pos))
+
+        if action == split_before_action:
+            self.split_current_cluster_at_file(file_id=file_id, clicked_file_goes_to_new=True)
+        elif action == split_after_action:
+            self.split_current_cluster_at_file(file_id=file_id, clicked_file_goes_to_new=False)
+
+    def split_current_cluster_at_file(self, file_id, clicked_file_goes_to_new):
+        """
+        Splits the currently loaded cluster into two clusters.
+
+        clicked_file_goes_to_new=True:
+            Split before this photo.
+            The clicked photo becomes the first item of the new cluster.
+
+        clicked_file_goes_to_new=False:
+            Split after this photo.
+            The clicked photo stays in the old cluster.
+        """
+        if not self.current_cluster_id:
+            return
+
+        cursor = self.db.conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT id, computed_date
+            FROM files
+            WHERE cluster_id = ?
+              AND status != 'archived'
+            ORDER BY computed_date ASC, id ASC
+            """,
+            (self.current_cluster_id,),
+        )
+        files = cursor.fetchall()
+
+        file_ids = [row["id"] for row in files]
+
+        if file_id not in file_ids:
+            QMessageBox.warning(
+                self,
+                "Split Failed",
+                "That file is no longer part of the currently loaded cluster.",
+            )
+            return
+
+        clicked_index = file_ids.index(file_id)
+
+        if clicked_file_goes_to_new:
+            split_index = clicked_index
+        else:
+            split_index = clicked_index + 1
+
+        if split_index <= 0:
+            QMessageBox.information(
+                self,
+                "Cannot Split",
+                "Cannot split before the first file. The old cluster would be empty.",
+            )
+            return
+
+        if split_index >= len(files):
+            QMessageBox.information(
+                self,
+                "Cannot Split",
+                "Cannot split after the last file. The new cluster would be empty.",
+            )
+            return
+
+        old_files = files[:split_index]
+        new_files = files[split_index:]
+        new_file_ids = [row["id"] for row in new_files]
+
+        new_start = new_files[0]["computed_date"]
+        new_end = new_files[-1]["computed_date"]
+        new_count = len(new_files)
+
+        try:
+            cursor.execute(
+                """
+                INSERT INTO clusters (start_date, end_date, file_count, assigned_name, status)
+                VALUES (?, ?, ?, ?, 'pending')
+                """,
+                (new_start, new_end, new_count, None),
+            )
+            new_cluster_id = cursor.lastrowid
+
+            placeholders = ",".join("?" for _ in new_file_ids)
+            cursor.execute(
+                f"""
+                UPDATE files
+                SET cluster_id = ?
+                WHERE id IN ({placeholders})
+                """,
+                [new_cluster_id] + new_file_ids,
+            )
+
+            self._recalculate_cluster_dates_and_count(cursor, self.current_cluster_id)
+            self._recalculate_cluster_dates_and_count(cursor, new_cluster_id)
+
+            self.db.conn.commit()
+
+            self.invalidate_plan()
+            self.load_clusters()
+            self.load_cluster_by_id(self.current_cluster_id)
+
+            self.update_status(
+                f"Split Event {self.current_cluster_id}; created Event {new_cluster_id}"
+            )
+
+        except Exception as e:
+            self.db.conn.rollback()
+            QMessageBox.critical(
+                self,
+                "Split Failed",
+                f"Could not split cluster:\n{str(e)}",
+            )
+
+    def _recalculate_all_cluster_counts(self, cursor):
+        cursor.execute(
+            """
+            UPDATE clusters
+            SET file_count = (
+                SELECT COUNT(id)
+                FROM files
+                WHERE files.cluster_id = clusters.id
+                  AND files.status != 'archived'
+            )
+            """
+        )
+
+    def _recalculate_cluster_dates_and_count(self, cursor, cluster_id):
+        cursor.execute(
+            """
+            SELECT computed_date
+            FROM files
+            WHERE cluster_id = ?
+              AND status != 'archived'
+              AND computed_date IS NOT NULL
+            ORDER BY computed_date ASC, id ASC
+            """,
+            (cluster_id,),
+        )
+        rows = cursor.fetchall()
+
+        count = len(rows)
+
+        if count == 0:
+            cursor.execute(
+                """
+                UPDATE clusters
+                SET start_date = NULL,
+                    end_date = NULL,
+                    file_count = 0
+                WHERE id = ?
+                """,
+                (cluster_id,),
+            )
+            return
+
+        start_date = rows[0]["computed_date"]
+        end_date = rows[-1]["computed_date"]
+
+        cursor.execute(
+            """
+            UPDATE clusters
+            SET start_date = ?,
+                end_date = ?,
+                file_count = ?
+            WHERE id = ?
+            """,
+            (start_date, end_date, count, cluster_id),
+        )
 
     def save_cluster_name(self):
         if not self.current_cluster_id:
@@ -668,7 +876,7 @@ class ClustreeWindow(QMainWindow):
                 FROM files
                 WHERE cluster_id = ?
                   AND status != 'archived'
-                ORDER BY computed_date ASC
+                ORDER BY computed_date ASC, id ASC
                 """,
                 (cluster_id,),
             )
