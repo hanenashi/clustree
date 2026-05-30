@@ -1,43 +1,28 @@
+import sys
 import os
 from pathlib import Path
+from PyQt5.QtWidgets import QApplication
 
-# Core Engine Modules
 from core.database import ClustreeDB
-from core.crawler import Crawler
-from core.metadata import MetadataExtractor
-from core.cluster import ClusterEngine
+from gui.main_window import ClustreeWindow
 
 def main():
-    print("🌳 Starting Clustree Engine...")
+    print("🌳 Booting Clustree UI...")
     
-    # Initialize Database
+    # We skip the crawler phases for now and just open the DB we already built
     db = ClustreeDB("clustree_test.db")
     
-    # --- Phase 1: Ingestion & Deduplication ---
-    test_folder = input("Enter path to a test directory (e.g., C:/temp/photos): ").strip()
+    # Start PyQt5 Application
+    app = QApplication(sys.argv)
     
-    if not os.path.exists(test_folder):
-        print("Path not found. Exiting.")
-        return
-
-    print("\n--- Phase 1: Crawling & Hashing ---")
-    crawler = Crawler(db)
-    crawler.scan_directory(test_folder)
-
-    # --- Phase 2: Timeline Extraction ---
-    print("\n--- Phase 2: Extracting Timelines ---")
-    extractor = MetadataExtractor(db)
-    extractor.process_pending_files()
-
-    # --- Phase 3: Magic Clustering ---
-    print("\n--- Phase 3: Grouping Events ---")
+    # Set global dark-ish theme (optional, but easy on the eyes)
+    app.setStyle("Fusion")
     
-    # max_gap_hours determines how much time must pass before a new "Event" starts
-    cluster_engine = ClusterEngine(db, max_gap_hours=12)
-    cluster_engine.build_clusters()
-
-    print("\n✅ Run complete. Check 'clustree_test.db' using an SQLite viewer to inspect the results.")
-    db.close()
+    window = ClustreeWindow(db)
+    window.show()
+    
+    # Run the event loop
+    sys.exit(app.exec_())
 
 if __name__ == "__main__":
     main()
