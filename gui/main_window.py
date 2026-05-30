@@ -29,15 +29,12 @@ class IngestionWorker(QThread):
         self.target_dir = target_dir
 
     def run(self):
-        # Phase 1
         crawler = Crawler(self.db)
         crawler.scan_directory(self.target_dir)
 
-        # Phase 2
         extractor = MetadataExtractor(self.db)
         extractor.process_pending_files()
 
-        # Phase 3
         cluster_engine = ClusterEngine(self.db, max_gap_hours=12)
         cluster_engine.build_clusters()
 
@@ -78,6 +75,47 @@ class ThumbnailWorker(QThread):
         self.is_running = False
 
 
+class ClusterListWidget(QListWidget):
+    """Custom ListWidget for the sidebar to handle drag-and-drop reassignment."""
+    file_reassigned = pyqtSignal(str, int) # Emits: file_path, new_cluster_id
+
+    def __init__(self):
+        super().__init__()
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event):
+        # Only accept drops coming from the thumbnail grid
+        if event.source() and event.source() != self:
+            event.accept()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.source() and event.source() != self:
+            event.accept()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        target_item = self.itemAt(event.pos())
+        if not target_item or event.source() == self:
+            event.ignore()
+            return
+
+        new_cluster_id = target_item.data(Qt.ItemDataRole.UserRole)
+        source_widget = event.source()
+        
+        # Handle multiple selected items being dragged
+        for item in source_widget.selectedItems():
+            file_path = item.data(Qt.ItemDataRole.UserRole)
+            self.file_reassigned.emit(file_path, new_cluster_id)
+            
+            # Remove the thumbnail from the grid visually
+            source_widget.takeItem(source_widget.row(item))
+
+        event.accept()
+
+
 class ClustreeWindow(QMainWindow):
     def __init__(self, db):
         super().__init__()
@@ -88,7 +126,6 @@ class ClustreeWindow(QMainWindow):
         self.thumb_worker = None
         self.ingestion_worker = None
         
-        # Main Layout Setup
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)
@@ -96,19 +133,19 @@ class ClustreeWindow(QMainWindow):
         # --- Left Panel: Cluster List & Controls ---
         left_panel = QVBoxLayout()
         
-        # New: Top control bar for the left panel
         left_header_layout = QHBoxLayout()
         left_header_layout.addWidget(QLabel("<b>Detected Events</b>"))
         
         self.scan_btn = QPushButton("Scan Folder...")
         self.scan_btn.clicked.connect(self.select_and_scan_folder)
         left_header_layout.addWidget(self.scan_btn)
-        
         left_panel.addLayout(left_header_layout)
         
-        self.cluster_list = QListWidget()
+        # Use our new custom drag-and-drop list widget
+        self.cluster_list = ClusterListWidget()
         self.cluster_list.setFixedWidth(300)
         self.cluster_list.itemClicked.connect(self.start_loading_cluster)
+        self.cluster_list.file_reassigned.connect(self.handle_file_reassigned)
         
         left_panel.addWidget(self.cluster_list)
         main_layout.addLayout(left_panel)
@@ -116,21 +153,23 @@ class ClustreeWindow(QMainWindow):
         # --- Right Panel: Triage & Rename ---
         right_panel = QVBoxLayout()
         
-        # Header & Progress
         self.grid_header = QLabel("<b>Select a cluster to view media...</b>")
         self.progress_bar = QProgressBar()
         self.progress_bar.setFixedHeight(10)
         self.progress_bar.setTextVisible(False)
         self.progress_bar.hide()
         
-        # Thumbnail Grid
         self.thumbnail_grid = QListWidget()
         self.thumbnail_grid.setViewMode(QListWidget.ViewMode.IconMode)
         self.thumbnail_grid.setIconSize(QSize(200, 200))
         self.thumbnail_grid.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.thumbnail_grid.setSpacing(10)
         
-        # Action Bar (Bottom)
+        # NEW Drag and Drop Settings for the Grid
+        self.thumbnail_grid.setDragEnabled(True)
+        self.thumbnail_grid.setAcceptDrops(False) # Stop the green plus self-copy bug
+        self.thumbnail_grid.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection) # Allow multi-select
+        
         action_layout = QHBoxLayout()
         self.rename_input = QLineEdit()
         self.rename_input.setPlaceholderText("Enter Event Name (e.g., Park Trip, Beach Day)...")
@@ -144,45 +183,54 @@ class ClustreeWindow(QMainWindow):
         action_layout.addWidget(self.rename_input)
         action_layout.addWidget(self.commit_btn)
         
-        # Assemble Right Panel
         right_panel.addWidget(self.grid_header)
         right_panel.addWidget(self.progress_bar)
         right_panel.addWidget(self.thumbnail_grid)
         right_panel.addLayout(action_layout)
         
         main_layout.addLayout(right_panel)
+        self.load_clusters()
+
+    def handle_file_reassigned(self, file_path, new_cluster_id):
+        """Updates the DB when a thumbnail is dropped onto a new cluster."""
+        cursor = self.db.conn.cursor()
+        cursor.execute("UPDATE files SET cluster_id = ? WHERE original_path = ?", (new_cluster_id, file_path))
         
+        # Dynamically recalculate all active cluster file counts
+        cursor.execute('''
+            UPDATE clusters 
+            SET file_count = (SELECT COUNT(id) FROM files WHERE files.cluster_id = clusters.id AND files.status != 'archived')
+        ''')
+        self.db.conn.commit()
+        
+        # Refresh sidebar so the bracketed numbers update [11 files] -> [12 files]
         self.load_clusters()
 
     def select_and_scan_folder(self):
-        """Opens a folder picker and kicks off the background ingestion engine."""
         target_dir = QFileDialog.getExistingDirectory(self, "Select Directory to Ingest")
         if not target_dir:
             return
             
-        # Lock UI slightly to show work is happening
         self.scan_btn.setEnabled(False)
         self.scan_btn.setText("Scanning...")
         self.grid_header.setText("<b>⚙️ Engine running. Check terminal for live progress...</b>")
         self.thumbnail_grid.clear()
         
-        # Fire up the engine in the background
         self.ingestion_worker = IngestionWorker(self.db, target_dir)
         self.ingestion_worker.finished.connect(self.on_scan_complete)
         self.ingestion_worker.start()
 
     def on_scan_complete(self):
-        """Called when the backend engine finishes its run."""
         self.scan_btn.setEnabled(True)
         self.scan_btn.setText("Scan Folder...")
         self.grid_header.setText("<b>✅ Scan complete! Select a new cluster on the left.</b>")
         self.load_clusters()
 
     def load_clusters(self):
-        """Fetches pending clusters from the DB and populates the sidebar."""
         self.cluster_list.clear()
         cursor = self.db.conn.cursor()
-        cursor.execute("SELECT id, start_date, file_count FROM clusters WHERE status != 'archived' ORDER BY start_date ASC")
+        # Only show clusters that actually have files left in them (count > 0)
+        cursor.execute("SELECT id, start_date, file_count FROM clusters WHERE status != 'archived' AND file_count > 0 ORDER BY start_date ASC")
         clusters = cursor.fetchall()
         
         for cluster in clusters:
@@ -195,7 +243,6 @@ class ClustreeWindow(QMainWindow):
             self.cluster_list.addItem(item)
 
     def start_loading_cluster(self, item):
-        """Initiates the background thread to load images."""
         if self.thumb_worker and self.thumb_worker.isRunning():
             self.thumb_worker.stop()
             self.thumb_worker.wait()
@@ -223,7 +270,6 @@ class ClustreeWindow(QMainWindow):
         self.thumb_worker.start()
 
     def add_thumbnail(self, file_path, file_name, qimage):
-        """Slot to safely add the constructed image to the UI thread."""
         thumb_item = QListWidgetItem()
         
         if not qimage.isNull():
@@ -237,7 +283,6 @@ class ClustreeWindow(QMainWindow):
         self.thumbnail_grid.addItem(thumb_item)
 
     def commit_event(self):
-        """Renames, moves files, and marks the cluster as archived."""
         event_name = self.rename_input.text().strip()
         if not event_name or not self.current_cluster_id:
             return
