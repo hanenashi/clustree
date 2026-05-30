@@ -7,11 +7,13 @@ from PyQt5.QtWidgets import QApplication
 # Silence the High Sierra SIP deprecation warning
 warnings.filterwarnings("ignore", message="sipPyTypeDict.. is deprecated")
 
+from core.app_config import APP_VERSION
 from core.database import ClustreeDB
 from gui.main_window import ClustreeWindow
 
+
 def main():
-    print("🌳 Booting Clustree UI...")
+    print(f"Booting Clustree UI v{APP_VERSION}...")
     
     # Initialize Database
     db = ClustreeDB("clustree_test.db")
@@ -27,6 +29,7 @@ def main():
     
     # CRITICAL: This traps the script in an event loop to keep the window open
     sys.exit(app.exec_())
+
 
 if __name__ == "__main__":
     main()
