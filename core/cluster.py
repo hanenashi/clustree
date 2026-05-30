@@ -12,6 +12,7 @@ class ClusterEngine:
     def build_clusters(self):
         """Groups files into events based on chronological time gaps."""
         cursor = self.db.conn.cursor()
+        self._reset_pending_clusters(cursor)
         
         # Get all dated, non-duplicate files sorted chronologically
         cursor.execute('''
@@ -23,6 +24,7 @@ class ClusterEngine:
         rows = cursor.fetchall()
 
         if not rows:
+            self.db.conn.commit()
             print("No files available to cluster.")
             return
 
@@ -33,7 +35,7 @@ class ClusterEngine:
             file_id = row['id']
             try:
                 current_time = datetime.strptime(row['computed_date'], '%Y-%m-%d %H:%M:%S')
-            except ValueError:
+            except (TypeError, ValueError):
                 continue
 
             # Start the very first cluster
@@ -57,6 +59,15 @@ class ClusterEngine:
             clusters.append(current_cluster)
 
         self._save_clusters(clusters)
+
+    def _reset_pending_clusters(self, cursor):
+        """Deletes rebuildable clusters so repeated scans do not create stale duplicates."""
+        cursor.execute("DELETE FROM clusters WHERE status != 'archived'")
+        cursor.execute('''
+            UPDATE files
+            SET cluster_id = NULL, status = 'dated'
+            WHERE status = 'clustered'
+        ''')
 
     def _save_clusters(self, clusters):
         """Writes the clustered groups back to the database."""
