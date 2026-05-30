@@ -2,7 +2,7 @@ import json
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
-APP_VERSION = "0.2.2"
+APP_VERSION = "0.2.3"
 SETTINGS_PATH = Path("clustree_settings.json")
 
 CLUSTER_GAP_PRESETS = {
