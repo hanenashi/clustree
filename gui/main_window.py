@@ -4,9 +4,12 @@ import shutil
 import warnings
 from pathlib import Path
 
-from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                             QListWidget, QListWidgetItem, QLabel, QProgressBar,
-                             QLineEdit, QPushButton, QMessageBox, QFileDialog)
+from PyQt5.QtWidgets import (
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QListWidget, QListWidgetItem, QLabel, QProgressBar,
+    QLineEdit, QPushButton, QMessageBox, QFileDialog,
+    QDialog, QFormLayout, QComboBox, QSpinBox, QDialogButtonBox
+)
 
 # Silence the High Sierra SIP deprecation warning
 warnings.filterwarnings("ignore", message="sipPyTypeDict.. is deprecated")
@@ -15,19 +18,93 @@ from PyQt5.QtGui import QPixmap, QIcon, QImage
 from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal
 
 # Import the core engine to run from the UI
+from core.app_config import (
+    APP_VERSION,
+    CLUSTER_GAP_PRESETS,
+    AppSettings,
+    load_settings,
+    save_settings,
+)
 from core.crawler import Crawler
 from core.metadata import MetadataExtractor
 from core.cluster import ClusterEngine
+
+
+class SettingsDialog(QDialog):
+    """Small settings pane for the first configurable Clustree options."""
+    def __init__(self, settings: AppSettings, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Clustree Settings")
+        self.settings = AppSettings(
+            cluster_gap_preset=settings.cluster_gap_preset,
+            cluster_gap_hours=settings.cluster_gap_hours,
+            thumbnail_size=settings.thumbnail_size,
+        ).normalize()
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.version_label = QLabel(f"Clustree {APP_VERSION}")
+        form.addRow("Version:", self.version_label)
+
+        self.gap_preset_combo = QComboBox()
+        for preset_name in CLUSTER_GAP_PRESETS.keys():
+            self.gap_preset_combo.addItem(preset_name)
+
+        preset_index = self.gap_preset_combo.findText(self.settings.cluster_gap_preset)
+        if preset_index < 0:
+            preset_index = self.gap_preset_combo.findText("Custom")
+        self.gap_preset_combo.setCurrentIndex(preset_index)
+        self.gap_preset_combo.currentTextChanged.connect(self.on_gap_preset_changed)
+        form.addRow("Cluster gap preset:", self.gap_preset_combo)
+
+        self.gap_hours_spin = QSpinBox()
+        self.gap_hours_spin.setRange(1, 168)
+        self.gap_hours_spin.setSuffix(" hours")
+        self.gap_hours_spin.setValue(self.settings.cluster_gap_hours)
+        form.addRow("Cluster gap:", self.gap_hours_spin)
+
+        self.thumbnail_size_spin = QSpinBox()
+        self.thumbnail_size_spin.setRange(64, 512)
+        self.thumbnail_size_spin.setSingleStep(16)
+        self.thumbnail_size_spin.setSuffix(" px")
+        self.thumbnail_size_spin.setValue(self.settings.thumbnail_size)
+        form.addRow("Thumbnail size:", self.thumbnail_size_spin)
+
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.on_gap_preset_changed(self.gap_preset_combo.currentText())
+
+    def on_gap_preset_changed(self, preset_name):
+        preset_value = CLUSTER_GAP_PRESETS.get(preset_name)
+        is_custom = preset_value is None
+        self.gap_hours_spin.setEnabled(is_custom)
+        if preset_value is not None:
+            self.gap_hours_spin.setValue(preset_value)
+
+    def get_settings(self) -> AppSettings:
+        preset_name = self.gap_preset_combo.currentText()
+        return AppSettings(
+            cluster_gap_preset=preset_name,
+            cluster_gap_hours=self.gap_hours_spin.value(),
+            thumbnail_size=self.thumbnail_size_spin.value(),
+        ).normalize()
 
 
 class IngestionWorker(QThread):
     """Background thread to run the 3-phase engine without freezing the GUI."""
     finished = pyqtSignal()
 
-    def __init__(self, db, target_dir):
+    def __init__(self, db, target_dir, cluster_gap_hours=12):
         super().__init__()
         self.db = db
         self.target_dir = target_dir
+        self.cluster_gap_hours = cluster_gap_hours
 
     def run(self):
         crawler = Crawler(self.db)
@@ -36,7 +113,7 @@ class IngestionWorker(QThread):
         extractor = MetadataExtractor(self.db)
         extractor.process_pending_files()
 
-        cluster_engine = ClusterEngine(self.db, max_gap_hours=12)
+        cluster_engine = ClusterEngine(self.db, max_gap_hours=self.cluster_gap_hours)
         cluster_engine.build_clusters()
 
         self.finished.emit()
@@ -48,9 +125,10 @@ class ThumbnailWorker(QThread):
     thumb_ready = pyqtSignal(str, str, QImage)
     finished = pyqtSignal()
 
-    def __init__(self, files):
+    def __init__(self, files, thumbnail_size=200):
         super().__init__()
         self.files = files
+        self.thumbnail_size = thumbnail_size
         self.is_running = True
 
     def run(self):
@@ -63,7 +141,12 @@ class ThumbnailWorker(QThread):
 
             if file_path.lower().endswith(('.jpg', '.jpeg', '.png')):
                 img = QImage(file_path)
-                img = img.scaled(200, 200, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                img = img.scaled(
+                    self.thumbnail_size,
+                    self.thumbnail_size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
                 self.thumb_ready.emit(file_path, file_name, img)
             else:
                 self.thumb_ready.emit(file_path, file_name, QImage()) 
@@ -121,7 +204,8 @@ class ClustreeWindow(QMainWindow):
     def __init__(self, db):
         super().__init__()
         self.db = db
-        self.setWindowTitle("Clustree 🌳 - Triage")
+        self.settings = load_settings()
+        self.setWindowTitle(f"Clustree {APP_VERSION} - Triage")
         self.resize(1200, 800)
         self.current_cluster_id = None
         self.thumb_worker = None
@@ -140,6 +224,11 @@ class ClustreeWindow(QMainWindow):
         self.scan_btn = QPushButton("Scan Folder...")
         self.scan_btn.clicked.connect(self.select_and_scan_folder)
         left_header_layout.addWidget(self.scan_btn)
+
+        self.settings_btn = QPushButton("Settings")
+        self.settings_btn.clicked.connect(self.open_settings)
+        left_header_layout.addWidget(self.settings_btn)
+
         left_panel.addLayout(left_header_layout)
         
         # Use our new custom drag-and-drop list widget
@@ -162,7 +251,7 @@ class ClustreeWindow(QMainWindow):
         
         self.thumbnail_grid = QListWidget()
         self.thumbnail_grid.setViewMode(QListWidget.ViewMode.IconMode)
-        self.thumbnail_grid.setIconSize(QSize(200, 200))
+        self.thumbnail_grid.setIconSize(QSize(self.settings.thumbnail_size, self.settings.thumbnail_size))
         self.thumbnail_grid.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.thumbnail_grid.setSpacing(10)
         
@@ -190,7 +279,24 @@ class ClustreeWindow(QMainWindow):
         right_panel.addLayout(action_layout)
         
         main_layout.addLayout(right_panel)
+        self.statusBar()
+        self.update_status()
         self.load_clusters()
+
+    def update_status(self, message="Ready"):
+        self.statusBar().showMessage(
+            f"{message} | Clustree {APP_VERSION} | Gap: {self.settings.cluster_gap_hours}h | Thumb: {self.settings.thumbnail_size}px"
+        )
+
+    def open_settings(self):
+        dialog = SettingsDialog(self.settings, self)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        self.settings = dialog.get_settings()
+        save_settings(self.settings)
+        self.thumbnail_grid.setIconSize(QSize(self.settings.thumbnail_size, self.settings.thumbnail_size))
+        self.update_status("Settings saved")
 
     def handle_file_reassigned(self, file_path, new_cluster_id):
         """Updates the DB when a thumbnail is dropped onto a new cluster."""
@@ -206,6 +312,7 @@ class ClustreeWindow(QMainWindow):
         
         # Refresh sidebar so the bracketed numbers update [11 files] -> [12 files]
         self.load_clusters()
+        self.update_status("File reassigned")
 
     def select_and_scan_folder(self):
         target_dir = QFileDialog.getExistingDirectory(self, "Select Directory to Ingest")
@@ -214,18 +321,26 @@ class ClustreeWindow(QMainWindow):
             
         self.scan_btn.setEnabled(False)
         self.scan_btn.setText("Scanning...")
-        self.grid_header.setText("<b>⚙️ Engine running. Check terminal for live progress...</b>")
+        self.settings_btn.setEnabled(False)
+        self.grid_header.setText("<b>Engine running. Check terminal for live progress...</b>")
         self.thumbnail_grid.clear()
+        self.update_status(f"Scanning with {self.settings.cluster_gap_hours}h cluster gap")
         
-        self.ingestion_worker = IngestionWorker(self.db, target_dir)
+        self.ingestion_worker = IngestionWorker(
+            self.db,
+            target_dir,
+            cluster_gap_hours=self.settings.cluster_gap_hours,
+        )
         self.ingestion_worker.finished.connect(self.on_scan_complete)
         self.ingestion_worker.start()
 
     def on_scan_complete(self):
         self.scan_btn.setEnabled(True)
+        self.settings_btn.setEnabled(True)
         self.scan_btn.setText("Scan Folder...")
-        self.grid_header.setText("<b>✅ Scan complete! Select a new cluster on the left.</b>")
+        self.grid_header.setText("<b>Scan complete! Select a new cluster on the left.</b>")
         self.load_clusters()
+        self.update_status("Scan complete")
 
     def load_clusters(self):
         self.cluster_list.clear()
@@ -259,12 +374,13 @@ class ClustreeWindow(QMainWindow):
         self.rename_input.setEnabled(True)
         self.commit_btn.setEnabled(True)
         self.rename_input.setFocus()
+        self.update_status(f"Viewing Event {self.current_cluster_id}")
         
         self.progress_bar.setMaximum(len(files))
         self.progress_bar.setValue(0)
         self.progress_bar.show()
         
-        self.thumb_worker = ThumbnailWorker(files)
+        self.thumb_worker = ThumbnailWorker(files, thumbnail_size=self.settings.thumbnail_size)
         self.thumb_worker.thumb_ready.connect(self.add_thumbnail)
         self.thumb_worker.progress.connect(self.progress_bar.setValue)
         self.thumb_worker.finished.connect(self.progress_bar.hide)
@@ -277,7 +393,7 @@ class ClustreeWindow(QMainWindow):
             pixmap = QPixmap.fromImage(qimage)
             thumb_item.setIcon(QIcon(pixmap))
         else:
-            thumb_item.setText("🎥 Video File")
+            thumb_item.setText("Video File")
             
         thumb_item.setToolTip(file_name)
         thumb_item.setData(Qt.ItemDataRole.UserRole, file_path)
@@ -351,7 +467,9 @@ class ClustreeWindow(QMainWindow):
             self.grid_header.setText("<b>Select a cluster to view media...</b>")
             
             self.load_clusters()
+            self.update_status("Event moved")
             
         except Exception as e:
             self.db.conn.rollback()
+            self.update_status("Move failed")
             QMessageBox.critical(self, "Error Moving Files", f"An error occurred: {str(e)}")
