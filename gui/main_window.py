@@ -10,7 +10,8 @@ from PyQt5.QtWidgets import (
     QListWidget, QListWidgetItem, QLabel, QProgressBar,
     QLineEdit, QPushButton, QMessageBox, QFileDialog,
     QDialog, QFormLayout, QComboBox, QSpinBox, QDialogButtonBox,
-    QPlainTextEdit, QMenu
+    QPlainTextEdit, QMenu, QTableWidget, QTableWidgetItem,
+    QHeaderView, QAbstractItemView
 )
 
 # Silence the High Sierra SIP deprecation warning
@@ -121,12 +122,12 @@ class SettingsDialog(QDialog):
 
 
 class PlanPreviewDialog(QDialog):
-    """Read-only dry-run preview window."""
+    """Dry-run preview window with a real table instead of a path wall."""
 
     def __init__(self, plan, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Preview Move Plan")
-        self.resize(900, 650)
+        self.resize(1100, 700)
 
         layout = QVBoxLayout(self)
 
@@ -139,45 +140,57 @@ class PlanPreviewDialog(QDialog):
         )
         layout.addWidget(summary)
 
-        text = QPlainTextEdit()
-        text.setReadOnly(True)
-        text.setPlainText(self._format_plan(plan))
-        layout.addWidget(text)
+        self.table = QTableWidget()
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["Cluster", "Event", "From", "To", "Status"])
+        self.table.setRowCount(len(plan.get("moves", [])))
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setAlternatingRowColors(True)
+
+        for row_index, move in enumerate(plan.get("moves", [])):
+            source_path = Path(move.get("from", ""))
+            target_path = Path(move.get("to", ""))
+            status = "OK" if source_path.exists() else "Missing source"
+
+            values = [
+                str(move.get("cluster_id", "")),
+                move.get("event_name", ""),
+                str(source_path),
+                str(target_path),
+                status,
+            ]
+
+            for column_index, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column_index in (0, 4):
+                    item.setTextAlignment(Qt.AlignCenter)
+                self.table.setItem(row_index, column_index, item)
+
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+
+        layout.addWidget(self.table)
+
+        warnings_box = QPlainTextEdit()
+        warnings_box.setReadOnly(True)
+        warnings_box.setMaximumHeight(120)
+
+        warnings_list = plan.get("warnings", [])
+        if warnings_list:
+            warnings_box.setPlainText("\n".join(f"- {warning}" for warning in warnings_list))
+        else:
+            warnings_box.setPlainText("No warnings.")
+
+        layout.addWidget(warnings_box)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok)
         buttons.accepted.connect(self.accept)
         layout.addWidget(buttons)
-
-    def _format_plan(self, plan):
-        lines = []
-        lines.append("CLUSTREE DRY-RUN MOVE PLAN")
-        lines.append("=" * 80)
-        lines.append(f"Created: {plan.get('created_at')}")
-        lines.append(f"Version: {plan.get('app_version')}")
-        lines.append(f"Rename pattern: {plan.get('rename_pattern_label', plan.get('rename_pattern'))}")
-        lines.append("")
-
-        warnings_list = plan.get("warnings", [])
-        if warnings_list:
-            lines.append("WARNINGS")
-            lines.append("-" * 80)
-            for warning in warnings_list:
-                lines.append(f"- {warning}")
-            lines.append("")
-
-        lines.append("MOVES")
-        lines.append("-" * 80)
-
-        for move in plan.get("moves", []):
-            lines.append(f"Cluster {move['cluster_id']} | {move['event_name']}")
-            lines.append(f"FROM: {move['from']}")
-            lines.append(f"TO:   {move['to']}")
-            lines.append("")
-
-        if not plan.get("moves"):
-            lines.append("No moves planned. Name some clusters first. The goblin waits.")
-
-        return "\n".join(lines)
 
 
 class IngestionWorker(QThread):
@@ -1177,6 +1190,19 @@ class ClustreeWindow(QMainWindow):
         dialog = PlanPreviewDialog(plan, self)
         dialog.exec_()
 
+    def _write_executed_result(self, result):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        result_path = Path(f"clustree_executed_plan_{timestamp}.json")
+
+        result["result_path"] = str(result_path)
+
+        result_path.write_text(
+            json.dumps(result, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        return result_path
+
     def run_move_plan(self):
         if not self.current_move_plan or not self.current_move_plan.get("moves"):
             QMessageBox.information(self, "No Plan", "Preview a move plan first.")
@@ -1194,23 +1220,33 @@ class ClustreeWindow(QMainWindow):
             return
 
         cursor = self.db.conn.cursor()
-        moved = 0
-        missing = 0
         touched_clusters = set()
 
-        try:
-            for move in self.current_move_plan["moves"]:
-                file_id = move["file_id"]
-                old_path = Path(move["from"])
-                new_path = Path(move["to"])
-                touched_clusters.add(move["cluster_id"])
+        result = {
+            "app_version": APP_VERSION,
+            "executed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "source_plan_path": self.current_move_plan.get("plan_path"),
+            "rename_pattern": self.current_move_plan.get("rename_pattern"),
+            "rename_pattern_label": self.current_move_plan.get("rename_pattern_label"),
+            "moved": [],
+            "missing": [],
+            "failed": [],
+            "result_path": None,
+        }
 
+        for move in self.current_move_plan["moves"]:
+            file_id = move["file_id"]
+            old_path = Path(move["from"])
+            new_path = Path(move["to"])
+            touched_clusters.add(move["cluster_id"])
+
+            try:
                 if not old_path.exists():
-                    missing += 1
                     cursor.execute(
                         "UPDATE files SET status = 'missing' WHERE id = ?",
                         (file_id,),
                     )
+                    result["missing"].append(move)
                     continue
 
                 new_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1220,39 +1256,44 @@ class ClustreeWindow(QMainWindow):
                     "UPDATE files SET original_path = ?, status = 'archived' WHERE id = ?",
                     (str(new_path), file_id),
                 )
-                moved += 1
+                result["moved"].append(move)
 
+            except Exception as e:
+                failed_move = dict(move)
+                failed_move["error"] = str(e)
+                result["failed"].append(failed_move)
+
+        if result["failed"]:
+            for cluster_id in touched_clusters:
+                self._recalculate_cluster_dates_and_count(cursor, cluster_id)
+        else:
             for cluster_id in touched_clusters:
                 cursor.execute(
                     "UPDATE clusters SET status = 'archived' WHERE id = ?",
                     (cluster_id,),
                 )
 
-            self.db.conn.commit()
+        self.db.conn.commit()
+        result_path = self._write_executed_result(result)
 
-            self.current_move_plan = None
-            self.run_plan_btn.setEnabled(False)
+        moved = len(result["moved"])
+        missing = len(result["missing"])
+        failed = len(result["failed"])
 
-            self.thumbnail_grid.clear()
-            self.rename_input.clear()
-            self.rename_input.setEnabled(False)
-            self.save_name_btn.setEnabled(False)
-            self.current_cluster_id = None
+        self.current_move_plan = None
+        self.run_plan_btn.setEnabled(False)
 
-            self.load_clusters()
-            self.update_status(f"Run complete: {moved} moved, {missing} missing")
+        self.thumbnail_grid.clear()
+        self.rename_input.clear()
+        self.rename_input.setEnabled(False)
+        self.save_name_btn.setEnabled(False)
+        self.current_cluster_id = None
 
-            QMessageBox.information(
-                self,
-                "Run Complete",
-                f"Moved: {moved}\nMissing: {missing}",
-            )
+        self.load_clusters()
+        self.update_status(f"Run complete: {moved} moved, {missing} missing, {failed} failed")
 
-        except Exception as e:
-            self.db.conn.rollback()
-            self.update_status("Run failed")
-            QMessageBox.critical(
-                self,
-                "Error Running Plan",
-                f"An error occurred: {str(e)}",
-            )
+        QMessageBox.information(
+            self,
+            "Run Complete",
+            f"Moved: {moved}\nMissing: {missing}\nFailed: {failed}\n\nResult saved:\n{result_path}",
+        )
