@@ -44,6 +44,26 @@ class Crawler:
             print(f"Error hashing {file_path}: {e}")
             return None
 
+    def _hash_unhashed_same_size_files(self, cursor, file_size, current_hash):
+        """Hashes older same-size files that were skipped while their size was still unique."""
+        cursor.execute(
+            "SELECT id, original_path FROM files WHERE file_size = ? AND file_hash IS NULL",
+            (file_size,),
+        )
+        rows = cursor.fetchall()
+
+        for row in rows:
+            old_path = Path(row['original_path'])
+            if not old_path.exists():
+                continue
+
+            old_hash = self.get_file_hash(old_path)
+            old_is_duplicate = 1 if old_hash == current_hash else 0
+            cursor.execute(
+                "UPDATE files SET file_hash = ?, is_duplicate = ? WHERE id = ?",
+                (old_hash, old_is_duplicate, row['id']),
+            )
+
     def scan_directory(self, target_dir: str):
         """Recursively finds media files, hashes only duplicate-size candidates, and inserts them into the DB."""
         target_path = Path(target_dir)
@@ -70,28 +90,14 @@ class Crawler:
 
             if same_size_exists:
                 file_hash = self.get_file_hash(file_path)
+                self._hash_unhashed_same_size_files(cursor, file_size, file_hash)
+
+                # Re-check after older same-size files have been backfilled with hashes.
                 cursor.execute(
                     "SELECT id FROM files WHERE file_size = ? AND file_hash = ? LIMIT 1",
                     (file_size, file_hash),
                 )
                 is_duplicate = 1 if cursor.fetchone() else 0
-
-                # Older files with this size may have been inserted before we knew their size had twins.
-                cursor.execute(
-                    "SELECT id, original_path FROM files WHERE file_size = ? AND file_hash IS NULL",
-                    (file_size,),
-                )
-                unhashes = cursor.fetchall()
-                for row in unhashes:
-                    old_path = Path(row['original_path'])
-                    if not old_path.exists():
-                        continue
-                    old_hash = self.get_file_hash(old_path)
-                    old_is_duplicate = 1 if old_hash == file_hash else 0
-                    cursor.execute(
-                        "UPDATE files SET file_hash = ?, is_duplicate = ? WHERE id = ?",
-                        (old_hash, old_is_duplicate, row['id']),
-                    )
 
             cursor.execute('''
                 INSERT INTO files (original_path, file_hash, file_size, is_duplicate)
