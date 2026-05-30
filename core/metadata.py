@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from PIL import Image, ExifTags
 
-# Using piexif/Pillow for image EXIF
+# Using piexif for deep EXIF extraction
 import piexif
 
 from core.database import ClustreeDB
@@ -24,24 +24,25 @@ class MetadataExtractor:
         self.regex_date_only = re.compile(r'(20\d{2})[-_]?([01]\d)[-_]?([0-3]\d)')
 
     def _get_exif_date(self, file_path: Path) -> str:
-        """Extracts DateTimeOriginal from EXIF."""
+        """Extracts DateTimeOriginal using piexif for deep EXIF parsing."""
         if file_path.suffix.lower() not in {'.jpg', '.jpeg'}:
             return None
             
         try:
-            img = Image.open(file_path)
-            exif_raw = img.getexif()
-            if not exif_raw:
-                return None
-                
-            # 36867 is the EXIF tag ID for DateTimeOriginal
-            # Format usually looks like: '2021:10:12 14:30:00'
-            date_str = exif_raw.get(36867) 
-            if date_str:
-                # Normalize EXIF date format to standard YYYY-MM-DD HH:MM:SS
+            # piexif is much more aggressive at finding hidden EXIF data
+            exif_dict = piexif.load(str(file_path))
+            
+            # DateTimeOriginal is hidden in the 'Exif' sub-dictionary
+            date_bytes = exif_dict.get("Exif", {}).get(piexif.ExifIFD.DateTimeOriginal)
+            
+            if date_bytes:
+                # piexif returns raw bytes, so we decode it
+                date_str = date_bytes.decode('utf-8')
+                # Format: '2026:05:17 15:40:36' -> '2026-05-17 15:40:36'
                 return date_str.replace(":", "-", 2)
         except Exception as e:
             logger.debug(f"EXIF read failed for {file_path.name}: {e}")
+            
         return None
 
     def _get_regex_date(self, file_name: str) -> str:
