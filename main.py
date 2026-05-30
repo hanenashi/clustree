@@ -1,8 +1,11 @@
 import os
 from pathlib import Path
+
+# Core Engine Modules
 from core.database import ClustreeDB
 from core.crawler import Crawler
 from core.metadata import MetadataExtractor
+from core.cluster import ClusterEngine
 
 def main():
     print("🌳 Starting Clustree Engine...")
@@ -25,6 +28,13 @@ def main():
     print("\n--- Phase 2: Extracting Timelines ---")
     extractor = MetadataExtractor(db)
     extractor.process_pending_files()
+
+    # --- Phase 3: Magic Clustering ---
+    print("\n--- Phase 3: Grouping Events ---")
+    
+    # max_gap_hours determines how much time must pass before a new "Event" starts
+    cluster_engine = ClusterEngine(db, max_gap_hours=12)
+    cluster_engine.build_clusters()
 
     print("\n✅ Run complete. Check 'clustree_test.db' using an SQLite viewer to inspect the results.")
     db.close()
