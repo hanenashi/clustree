@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import warnings
 from pathlib import Path
@@ -282,6 +283,29 @@ class ClustreeWindow(QMainWindow):
         thumb_item.setData(Qt.ItemDataRole.UserRole, file_path)
         self.thumbnail_grid.addItem(thumb_item)
 
+    def _safe_event_name(self, event_name):
+        """Creates a filesystem-friendly event name while keeping it readable."""
+        safe_name = re.sub(r'[<>:"\\|?*/]+', '-', event_name.strip())
+        safe_name = re.sub(r'\s+', '_', safe_name)
+        safe_name = safe_name.strip(' ._-')
+        return safe_name or "Unnamed_Event"
+
+    def _unique_path(self, path: Path) -> Path:
+        """Returns a non-existing path by appending _2, _3, etc. if needed."""
+        if not path.exists():
+            return path
+
+        parent = path.parent
+        stem = path.stem
+        suffix = path.suffix
+        counter = 2
+
+        while True:
+            candidate = parent / f"{stem}_{counter}{suffix}"
+            if not candidate.exists():
+                return candidate
+            counter += 1
+
     def commit_event(self):
         event_name = self.rename_input.text().strip()
         if not event_name or not self.current_cluster_id:
@@ -295,20 +319,27 @@ class ClustreeWindow(QMainWindow):
             return
 
         base_date = files[0]['computed_date'].split(' ')[0]
-        safe_name = event_name.replace(" ", "_").replace("/", "-")
+        safe_name = self._safe_event_name(event_name)
         
         target_dir = Path(files[0]['original_path']).parent.parent / f"{base_date}_{safe_name}"
         target_dir.mkdir(parents=True, exist_ok=True)
 
+        move_plan = []
+        for f in files:
+            old_path = Path(f['original_path'])
+            date_compact = f['computed_date'].replace("-", "").replace(":", "").replace(" ", "_")
+            new_filename = f"{date_compact}_{safe_name}_{old_path.name}"
+            new_path = self._unique_path(target_dir / new_filename)
+            move_plan.append((f['id'], old_path, new_path))
+
         try:
-            for f in files:
-                old_path = Path(f['original_path'])
-                date_compact = f['computed_date'].replace("-", "").replace(":", "").replace(" ", "_")
-                new_filename = f"{date_compact}_{safe_name}_{old_path.name}"
-                new_path = target_dir / new_filename
+            for file_id, old_path, new_path in move_plan:
+                if not old_path.exists():
+                    cursor.execute("UPDATE files SET status = 'missing' WHERE id = ?", (file_id,))
+                    continue
 
                 shutil.move(str(old_path), str(new_path))
-                cursor.execute("UPDATE files SET original_path = ?, status = 'archived' WHERE id = ?", (str(new_path), f['id']))
+                cursor.execute("UPDATE files SET original_path = ?, status = 'archived' WHERE id = ?", (str(new_path), file_id))
 
             cursor.execute("UPDATE clusters SET assigned_name = ?, status = 'archived' WHERE id = ?", (event_name, self.current_cluster_id))
             self.db.conn.commit()
@@ -322,4 +353,5 @@ class ClustreeWindow(QMainWindow):
             self.load_clusters()
             
         except Exception as e:
+            self.db.conn.rollback()
             QMessageBox.critical(self, "Error Moving Files", f"An error occurred: {str(e)}")
