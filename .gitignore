@@ -8,13 +8,20 @@ venv/
 env/
 .venv/
 
-# Clustree Specific
+# Clustree runtime state
 *.db
+*.db-shm
+*.db-wal
 *.sqlite3
-logs/
-_TRASH_DUPLICATES/
+*.sqlite3-shm
+*.sqlite3-wal
 clustree_test.db
 clustree.db
+clustree_settings.json
+.clustree_cache/
+logs/
+_TRASH_DUPLICATES/
+clustree_move_plan_*.json
 
 # IDEs and Editors
 .vscode/
