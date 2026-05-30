@@ -1,4 +1,8 @@
-# Clustree 🌳
+# Clustree
+
+<p align="center">
+  <img src="clustree.png" width="400" alt="Clustree icon">
+</p>
 
 **Chaos photo-folder ingestion engine.**
 
