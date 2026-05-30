@@ -5,13 +5,44 @@ from pathlib import Path
 
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QListWidget, QListWidgetItem, QLabel, QProgressBar,
-                             QLineEdit, QPushButton, QMessageBox)
+                             QLineEdit, QPushButton, QMessageBox, QFileDialog)
 
 # Silence the High Sierra SIP deprecation warning
 warnings.filterwarnings("ignore", message="sipPyTypeDict.. is deprecated")
 
 from PyQt5.QtGui import QPixmap, QIcon, QImage
 from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal
+
+# Import the core engine to run from the UI
+from core.crawler import Crawler
+from core.metadata import MetadataExtractor
+from core.cluster import ClusterEngine
+
+
+class IngestionWorker(QThread):
+    """Background thread to run the 3-phase engine without freezing the GUI."""
+    finished = pyqtSignal()
+
+    def __init__(self, db, target_dir):
+        super().__init__()
+        self.db = db
+        self.target_dir = target_dir
+
+    def run(self):
+        # Phase 1
+        crawler = Crawler(self.db)
+        crawler.scan_directory(self.target_dir)
+
+        # Phase 2
+        extractor = MetadataExtractor(self.db)
+        extractor.process_pending_files()
+
+        # Phase 3
+        cluster_engine = ClusterEngine(self.db, max_gap_hours=12)
+        cluster_engine.build_clusters()
+
+        self.finished.emit()
+
 
 class ThumbnailWorker(QThread):
     """Background thread to safely load and scale images without freezing the UI."""
@@ -33,12 +64,11 @@ class ThumbnailWorker(QThread):
             file_name = Path(file_path).name
 
             if file_path.lower().endswith(('.jpg', '.jpeg', '.png')):
-                # QImage is thread-safe, QPixmap is not. We scale here in the background.
                 img = QImage(file_path)
                 img = img.scaled(200, 200, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
                 self.thumb_ready.emit(file_path, file_name, img)
             else:
-                self.thumb_ready.emit(file_path, file_name, QImage()) # Empty image for videos
+                self.thumb_ready.emit(file_path, file_name, QImage()) 
                 
             self.progress.emit(i + 1)
             
@@ -55,20 +85,31 @@ class ClustreeWindow(QMainWindow):
         self.setWindowTitle("Clustree 🌳 - Triage")
         self.resize(1200, 800)
         self.current_cluster_id = None
-        self.worker = None
+        self.thumb_worker = None
+        self.ingestion_worker = None
         
         # Main Layout Setup
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)
         
-        # --- Left Panel: Cluster List ---
+        # --- Left Panel: Cluster List & Controls ---
         left_panel = QVBoxLayout()
+        
+        # New: Top control bar for the left panel
+        left_header_layout = QHBoxLayout()
+        left_header_layout.addWidget(QLabel("<b>Detected Events</b>"))
+        
+        self.scan_btn = QPushButton("Scan Folder...")
+        self.scan_btn.clicked.connect(self.select_and_scan_folder)
+        left_header_layout.addWidget(self.scan_btn)
+        
+        left_panel.addLayout(left_header_layout)
+        
         self.cluster_list = QListWidget()
         self.cluster_list.setFixedWidth(300)
         self.cluster_list.itemClicked.connect(self.start_loading_cluster)
         
-        left_panel.addWidget(QLabel("<b>Detected Events (Clusters)</b>"))
         left_panel.addWidget(self.cluster_list)
         main_layout.addLayout(left_panel)
         
@@ -93,7 +134,7 @@ class ClustreeWindow(QMainWindow):
         action_layout = QHBoxLayout()
         self.rename_input = QLineEdit()
         self.rename_input.setPlaceholderText("Enter Event Name (e.g., Park Trip, Beach Day)...")
-        self.rename_input.returnPressed.connect(self.commit_event) # Allows hitting Enter to save
+        self.rename_input.returnPressed.connect(self.commit_event) 
         self.rename_input.setEnabled(False)
         
         self.commit_btn = QPushButton("Commit & Move Event")
@@ -111,6 +152,30 @@ class ClustreeWindow(QMainWindow):
         
         main_layout.addLayout(right_panel)
         
+        self.load_clusters()
+
+    def select_and_scan_folder(self):
+        """Opens a folder picker and kicks off the background ingestion engine."""
+        target_dir = QFileDialog.getExistingDirectory(self, "Select Directory to Ingest")
+        if not target_dir:
+            return
+            
+        # Lock UI slightly to show work is happening
+        self.scan_btn.setEnabled(False)
+        self.scan_btn.setText("Scanning...")
+        self.grid_header.setText("<b>⚙️ Engine running. Check terminal for live progress...</b>")
+        self.thumbnail_grid.clear()
+        
+        # Fire up the engine in the background
+        self.ingestion_worker = IngestionWorker(self.db, target_dir)
+        self.ingestion_worker.finished.connect(self.on_scan_complete)
+        self.ingestion_worker.start()
+
+    def on_scan_complete(self):
+        """Called when the backend engine finishes its run."""
+        self.scan_btn.setEnabled(True)
+        self.scan_btn.setText("Scan Folder...")
+        self.grid_header.setText("<b>✅ Scan complete! Select a new cluster on the left.</b>")
         self.load_clusters()
 
     def load_clusters(self):
@@ -131,10 +196,9 @@ class ClustreeWindow(QMainWindow):
 
     def start_loading_cluster(self, item):
         """Initiates the background thread to load images."""
-        # Stop existing worker if one is running
-        if self.worker and self.worker.isRunning():
-            self.worker.stop()
-            self.worker.wait()
+        if self.thumb_worker and self.thumb_worker.isRunning():
+            self.thumb_worker.stop()
+            self.thumb_worker.wait()
             
         self.thumbnail_grid.clear()
         self.current_cluster_id = item.data(Qt.ItemDataRole.UserRole)
@@ -148,16 +212,15 @@ class ClustreeWindow(QMainWindow):
         self.commit_btn.setEnabled(True)
         self.rename_input.setFocus()
         
-        # Setup and start background worker
         self.progress_bar.setMaximum(len(files))
         self.progress_bar.setValue(0)
         self.progress_bar.show()
         
-        self.worker = ThumbnailWorker(files)
-        self.worker.thumb_ready.connect(self.add_thumbnail)
-        self.worker.progress.connect(self.progress_bar.setValue)
-        self.worker.finished.connect(self.progress_bar.hide)
-        self.worker.start()
+        self.thumb_worker = ThumbnailWorker(files)
+        self.thumb_worker.thumb_ready.connect(self.add_thumbnail)
+        self.thumb_worker.progress.connect(self.progress_bar.setValue)
+        self.thumb_worker.finished.connect(self.progress_bar.hide)
+        self.thumb_worker.start()
 
     def add_thumbnail(self, file_path, file_name, qimage):
         """Slot to safely add the constructed image to the UI thread."""
@@ -186,41 +249,31 @@ class ClustreeWindow(QMainWindow):
         if not files:
             return
 
-        # Create output directory structure
-        base_date = files[0]['computed_date'].split(' ')[0] # '2026-05-12'
+        base_date = files[0]['computed_date'].split(' ')[0]
         safe_name = event_name.replace(" ", "_").replace("/", "-")
         
-        # Creates a new folder parallel to where the first file is located
         target_dir = Path(files[0]['original_path']).parent.parent / f"{base_date}_{safe_name}"
         target_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             for f in files:
                 old_path = Path(f['original_path'])
-                
-                # Format: 20260512_152056_Cherry_Blossoms_IMGP4276.jpg
                 date_compact = f['computed_date'].replace("-", "").replace(":", "").replace(" ", "_")
                 new_filename = f"{date_compact}_{safe_name}_{old_path.name}"
                 new_path = target_dir / new_filename
 
-                # Physically move the file
                 shutil.move(str(old_path), str(new_path))
-                
-                # Update database
                 cursor.execute("UPDATE files SET original_path = ?, status = 'archived' WHERE id = ?", (str(new_path), f['id']))
 
-            # Mark cluster as done
             cursor.execute("UPDATE clusters SET assigned_name = ?, status = 'archived' WHERE id = ?", (event_name, self.current_cluster_id))
             self.db.conn.commit()
             
-            # Clean up UI
             self.thumbnail_grid.clear()
             self.rename_input.clear()
             self.rename_input.setEnabled(False)
             self.commit_btn.setEnabled(False)
             self.grid_header.setText("<b>Select a cluster to view media...</b>")
             
-            # Refresh sidebar
             self.load_clusters()
             
         except Exception as e:
