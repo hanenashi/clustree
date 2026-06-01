@@ -38,6 +38,8 @@ Implemented now:
 - Right-click thumbnail split:
   - split before this photo
   - split after this photo
+- Right-click selected thumbnails:
+  - move selected to a temp manual cluster for date-independent repeated subjects
 - Right-click cluster-list merge:
   - merge selected clusters
   - merge with previous cluster
@@ -226,6 +228,11 @@ reverse move data are written under `.clustree_cache/duplicate_runs/`.
 `Undo Dupes` reads the latest cleanup archive, refuses unsafe overwrites, moves
 files back, restores rows to `clustered`, and writes rollback results under
 `.clustree_cache/duplicate_rollbacks/`.
+
+For repeated everyday subjects that should not be grouped by capture date, select
+thumbnails inside an event and use `Move selected to temp cluster` from the
+thumbnail context menu. Clustree creates a normal pending cluster from that
+manual selection; name it like any other event before previewing/exporting.
 
 ---
 

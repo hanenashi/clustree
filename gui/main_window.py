@@ -1602,27 +1602,124 @@ class ClustreeWindow(QMainWindow):
         if not item or not self.current_cluster_id:
             return
 
+        if not item.isSelected():
+            self.thumbnail_grid.clearSelection()
+            item.setSelected(True)
+            self.thumbnail_grid.setCurrentItem(item)
+
         payload = item.data(Qt.ItemDataRole.UserRole)
         if not isinstance(payload, dict):
             return
 
         file_id = payload.get("id")
         file_name = payload.get("name", "this photo")
+        selected_file_ids = self._selected_thumbnail_file_ids()
 
         if not file_id:
             return
 
         menu = QMenu(self)
 
+        temp_cluster_action = menu.addAction(f"Move selected to temp cluster ({len(selected_file_ids)})")
+        menu.addSeparator()
         split_before_action = menu.addAction(f"Split before {file_name}")
         split_after_action = menu.addAction(f"Split after {file_name}")
 
         action = menu.exec_(self.thumbnail_grid.mapToGlobal(pos))
 
-        if action == split_before_action:
+        if action == temp_cluster_action:
+            self.move_selected_thumbnails_to_temp_cluster(selected_file_ids)
+        elif action == split_before_action:
             self.split_current_cluster_at_file(file_id=file_id, clicked_file_goes_to_new=True)
         elif action == split_after_action:
             self.split_current_cluster_at_file(file_id=file_id, clicked_file_goes_to_new=False)
+
+    def _selected_thumbnail_file_ids(self):
+        file_ids = []
+
+        for item in self.thumbnail_grid.selectedItems():
+            payload = item.data(Qt.ItemDataRole.UserRole)
+            if not isinstance(payload, dict):
+                continue
+
+            file_id = payload.get("id")
+            if file_id is not None and file_id not in file_ids:
+                file_ids.append(file_id)
+
+        return file_ids
+
+    def move_selected_thumbnails_to_temp_cluster(self, file_ids):
+        """Creates a manual cluster from the selected thumbnails, independent of date gaps."""
+        if not self.current_cluster_id or not file_ids:
+            return
+
+        cursor = self.db.conn.cursor()
+        placeholders = ",".join("?" for _ in file_ids)
+        cursor.execute(
+            f"""
+            SELECT id, computed_date
+            FROM files
+            WHERE cluster_id = ?
+              AND id IN ({placeholders})
+              AND status != 'archived'
+            ORDER BY computed_date ASC, id ASC
+            """,
+            [self.current_cluster_id] + file_ids,
+        )
+        selected_files = cursor.fetchall()
+
+        if not selected_files:
+            QMessageBox.warning(
+                self,
+                "Temp Cluster Failed",
+                "No selected files are still part of the current cluster.",
+            )
+            return
+
+        selected_ids = [row["id"] for row in selected_files]
+        selected_dates = [row["computed_date"] for row in selected_files if row["computed_date"]]
+        start_date = selected_dates[0] if selected_dates else None
+        end_date = selected_dates[-1] if selected_dates else None
+
+        try:
+            cursor.execute(
+                """
+                INSERT INTO clusters (start_date, end_date, file_count, assigned_name, status)
+                VALUES (?, ?, ?, ?, 'pending')
+                """,
+                (start_date, end_date, len(selected_ids), None),
+            )
+            new_cluster_id = cursor.lastrowid
+
+            selected_placeholders = ",".join("?" for _ in selected_ids)
+            cursor.execute(
+                f"""
+                UPDATE files
+                SET cluster_id = ?
+                WHERE id IN ({selected_placeholders})
+                """,
+                [new_cluster_id] + selected_ids,
+            )
+
+            self._recalculate_cluster_dates_and_count(cursor, self.current_cluster_id)
+            self._recalculate_cluster_dates_and_count(cursor, new_cluster_id)
+            self.db.conn.commit()
+
+            self.invalidate_plan()
+            self.load_clusters()
+            self.load_cluster_by_id(new_cluster_id)
+
+            self.update_status(
+                f"Moved {len(selected_ids)} file(s) into temp Event {new_cluster_id}"
+            )
+
+        except Exception as e:
+            self.db.conn.rollback()
+            QMessageBox.critical(
+                self,
+                "Temp Cluster Failed",
+                f"Could not create temp cluster:\n{str(e)}",
+            )
 
     def split_current_cluster_at_file(self, file_id, clicked_file_goes_to_new):
         """
