@@ -27,8 +27,11 @@ Implemented now:
 - Version display in startup/window/settings/status bar.
 - Configurable cluster gap presets.
 - Configurable thumbnail size.
+- Optional filename and smart file-size labels under thumbnails.
 - Configurable rename pattern.
 - Configurable staging/output root for manual promotion into a stable photo pool.
+- Optional virtual `DELETE` cluster for confirmed permanent source-file removal.
+- Settings `CLEANUP` button to wipe local caches and the current Clustree database.
 - GUI phase messages during scan/date/cluster ingestion.
 - GUI ingestion progress counts for scanning, date extraction, and clustering.
 - PyQt thumbnail triage UI.
@@ -161,8 +164,10 @@ Current settings:
 - cluster gap preset
 - custom cluster gap hours
 - thumbnail size
+- thumbnail filename/size labels
 - rename pattern
 - staging/output root
+- show DELETE cluster
 
 Cluster gap presets:
 
@@ -180,6 +185,7 @@ Rename patterns:
 Clean sequence: 2026-05-12_sakura_001.jpg
 Timestamp:      20260512_121459_sakura.jpg
 Keep original:  20260512_121459_sakura_PXL_20260512_031459393.jpg
+Imagee smart:   20260512_sakura_PXL_20260512_031459393.jpg
 ```
 
 Default is clean sequence.
@@ -251,6 +257,12 @@ thumbnail context menu. Clustree creates a normal pending cluster from that
 manual selection; name it like any other event before previewing/exporting. To
 keep adding more shots to that subject later, use `Move selected to existing
 cluster` from the same menu.
+
+When `Show DELETE cluster` is enabled, the sidebar shows a virtual `DELETE`
+row at the top and thumbnail context menus include a top DELETE action. DELETE
+asks for confirmation, removes selected source files from disk, and deletes
+their rows from the local database. Drag-and-drop onto the DELETE row is ignored
+so permanent deletion stays an explicit menu action.
 
 Unnamed clusters display as `Name: Event n` in the sidebar only. That fallback
 does not count as a saved event name, so unnamed clusters are still excluded

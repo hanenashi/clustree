@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
     QLineEdit, QPushButton, QMessageBox, QFileDialog,
     QDialog, QFormLayout, QComboBox, QSpinBox, QDialogButtonBox,
     QPlainTextEdit, QMenu, QTableWidget, QTableWidgetItem,
-    QHeaderView, QAbstractItemView, QInputDialog
+    QHeaderView, QAbstractItemView, QInputDialog, QCheckBox
 )
 
 # Silence the High Sierra SIP deprecation warning
@@ -49,6 +49,8 @@ MANUAL_CLUSTER_COLORS = (
     "#dcefd6",
     "#e5f7e9",
 )
+DELETE_CLUSTER_ID = -1000001
+DELETE_CLUSTER_COLOR = "#ffe5e5"
 
 
 class SettingsDialog(QDialog):
@@ -62,8 +64,10 @@ class SettingsDialog(QDialog):
             cluster_gap_preset=settings.cluster_gap_preset,
             cluster_gap_hours=settings.cluster_gap_hours,
             thumbnail_size=settings.thumbnail_size,
+            show_thumbnail_file_info=settings.show_thumbnail_file_info,
             rename_pattern=settings.rename_pattern,
             output_root=settings.output_root,
+            show_delete_cluster=settings.show_delete_cluster,
         ).normalize()
 
         layout = QVBoxLayout(self)
@@ -97,6 +101,10 @@ class SettingsDialog(QDialog):
         self.thumbnail_size_spin.setValue(self.settings.thumbnail_size)
         form.addRow("Thumbnail size:", self.thumbnail_size_spin)
 
+        self.show_thumbnail_file_info_check = QCheckBox("Show file name and size under thumbnails")
+        self.show_thumbnail_file_info_check.setChecked(self.settings.show_thumbnail_file_info)
+        form.addRow("Thumbnail labels:", self.show_thumbnail_file_info_check)
+
         self.rename_pattern_combo = QComboBox()
         for label in RENAME_PATTERN_OPTIONS.keys():
             self.rename_pattern_combo.addItem(label)
@@ -121,7 +129,15 @@ class SettingsDialog(QDialog):
         output_root_layout.addWidget(self.output_root_btn)
         form.addRow("Staging/output root:", output_root_layout)
 
+        self.show_delete_cluster_check = QCheckBox("Show DELETE cluster")
+        self.show_delete_cluster_check.setChecked(self.settings.show_delete_cluster)
+        form.addRow("DELETE cluster:", self.show_delete_cluster_check)
+
         layout.addLayout(form)
+
+        self.cleanup_btn = QPushButton("CLEANUP")
+        self.cleanup_btn.clicked.connect(self.request_cleanup)
+        layout.addWidget(self.cleanup_btn)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -147,8 +163,10 @@ class SettingsDialog(QDialog):
             cluster_gap_preset=preset_name,
             cluster_gap_hours=self.gap_hours_spin.value(),
             thumbnail_size=self.thumbnail_size_spin.value(),
+            show_thumbnail_file_info=self.show_thumbnail_file_info_check.isChecked(),
             rename_pattern=RENAME_PATTERN_OPTIONS.get(rename_label, "clean_sequence"),
             output_root=self.output_root_input.text().strip(),
+            show_delete_cluster=self.show_delete_cluster_check.isChecked(),
         ).normalize()
 
     def browse_output_root(self):
@@ -160,6 +178,11 @@ class SettingsDialog(QDialog):
 
         if output_root:
             self.output_root_input.setText(output_root)
+
+    def request_cleanup(self):
+        parent = self.parent()
+        if parent and hasattr(parent, "cleanup_local_state"):
+            parent.cleanup_local_state()
 
 
 class PlanPreviewDialog(QDialog):
@@ -463,7 +486,7 @@ class ThumbnailWorker(QThread):
     """Background thread to safely load and scale images without freezing the UI."""
 
     progress = pyqtSignal(int)
-    thumb_ready = pyqtSignal(int, str, str, QImage)
+    thumb_ready = pyqtSignal(int, str, str, int, QImage)
     finished = pyqtSignal()
 
     def __init__(self, files, thumbnail_size=200):
@@ -597,18 +620,19 @@ class ThumbnailWorker(QThread):
 
             file_id = f["id"]
             file_path = f["original_path"]
+            file_size = f["file_size"] or 0
             file_name = Path(file_path).name
 
             lower_path = file_path.lower()
 
             if lower_path.endswith(IMAGE_THUMBNAIL_EXTENSIONS):
                 img = self._load_or_create_image_thumbnail(file_path)
-                self.thumb_ready.emit(file_id, file_path, file_name, img)
+                self.thumb_ready.emit(file_id, file_path, file_name, file_size, img)
             elif lower_path.endswith(VIDEO_THUMBNAIL_EXTENSIONS):
                 img = self._load_or_create_video_thumbnail(file_path)
-                self.thumb_ready.emit(file_id, file_path, file_name, img)
+                self.thumb_ready.emit(file_id, file_path, file_name, file_size, img)
             else:
-                self.thumb_ready.emit(file_id, file_path, file_name, QImage())
+                self.thumb_ready.emit(file_id, file_path, file_name, file_size, QImage())
 
             self.progress.emit(i + 1)
 
@@ -720,6 +744,11 @@ class ClusterListWidget(QListWidget):
             return
 
         new_cluster_id = target_item.data(Qt.ItemDataRole.UserRole)
+        if new_cluster_id == DELETE_CLUSTER_ID:
+            self._clear_drop_target_item()
+            event.ignore()
+            return
+
         source_widget = event.source()
 
         for item in source_widget.selectedItems():
@@ -801,9 +830,10 @@ class ClustreeWindow(QMainWindow):
 
         self.thumbnail_grid = ThumbnailGridWidget()
         self.thumbnail_grid.setViewMode(QListWidget.ViewMode.IconMode)
-        self.thumbnail_grid.setIconSize(QSize(self.settings.thumbnail_size, self.settings.thumbnail_size))
         self.thumbnail_grid.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.thumbnail_grid.setSpacing(10)
+        self.thumbnail_grid.setWordWrap(True)
+        self.thumbnail_grid.setTextElideMode(Qt.TextElideMode.ElideMiddle)
         self.thumbnail_grid.setDragEnabled(True)
         self.thumbnail_grid.setAcceptDrops(False)
         self.thumbnail_grid.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
@@ -857,6 +887,7 @@ class ClustreeWindow(QMainWindow):
         main_layout.addLayout(right_panel)
 
         self.statusBar()
+        self._apply_thumbnail_grid_settings()
         self.update_status()
         self.load_clusters()
 
@@ -869,12 +900,22 @@ class ClustreeWindow(QMainWindow):
             f"Gap: {self.settings.cluster_gap_hours}h | "
             f"Thumb: {self.settings.thumbnail_size}px | "
             f"Rename: {pattern_label} | "
+            f"DELETE: {'on' if self.settings.show_delete_cluster else 'off'} | "
             f"Staging: {output_label}"
         )
 
     def invalidate_plan(self):
         self.current_move_plan = None
         self.run_plan_btn.setEnabled(False)
+
+    def _apply_thumbnail_grid_settings(self):
+        thumb_size = self.settings.thumbnail_size
+        self.thumbnail_grid.setIconSize(QSize(thumb_size, thumb_size))
+
+        if self.settings.show_thumbnail_file_info:
+            self.thumbnail_grid.setGridSize(QSize(thumb_size + 74, thumb_size + 58))
+        else:
+            self.thumbnail_grid.setGridSize(QSize(thumb_size + 26, thumb_size + 28))
 
     def build_duplicate_groups(self):
         cursor = self.db.conn.cursor()
@@ -1249,12 +1290,102 @@ class ClustreeWindow(QMainWindow):
         self.settings = dialog.get_settings()
         save_settings(self.settings)
 
-        self.thumbnail_grid.setIconSize(QSize(self.settings.thumbnail_size, self.settings.thumbnail_size))
+        self._apply_thumbnail_grid_settings()
         self.invalidate_plan()
+        self.load_clusters()
+        if self.current_cluster_id == DELETE_CLUSTER_ID and not self.settings.show_delete_cluster:
+            self.current_cluster_id = None
+            self.thumbnail_grid.clear()
+            self.grid_header.setText("<b>Select a cluster to view media...</b>")
+        elif self.current_cluster_id and self.current_cluster_id != DELETE_CLUSTER_ID:
+            self.load_cluster_by_id(self.current_cluster_id)
         self.update_status("Settings saved")
+
+    def cleanup_local_state(self):
+        if self.thumb_worker and self.thumb_worker.isRunning():
+            QMessageBox.warning(self, "Cleanup Blocked", "Wait for thumbnail loading to finish first.")
+            return
+
+        if self.ingestion_worker and self.ingestion_worker.isRunning():
+            QMessageBox.warning(self, "Cleanup Blocked", "Wait for the current scan to finish first.")
+            return
+
+        db_path = Path(self.db.db_path)
+        cache_path = Path(".clustree_cache")
+
+        reply = QMessageBox.warning(
+            self,
+            "CLEANUP",
+            "Wipe Clustree caches and the local database?\n\n"
+            f"Cache: {cache_path}\n"
+            f"Database: {db_path}\n\n"
+            "Source photos are not touched, but all scan/cluster state will be lost.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+
+        if reply != QMessageBox.Yes:
+            return
+
+        removed = []
+        failed = []
+
+        try:
+            self.db.close()
+        except Exception:
+            pass
+
+        if cache_path.exists():
+            try:
+                shutil.rmtree(cache_path)
+                removed.append(str(cache_path))
+            except Exception as e:
+                failed.append(f"{cache_path}: {e}")
+
+        for candidate in (db_path, Path(f"{db_path}-wal"), Path(f"{db_path}-shm")):
+            if not candidate.exists():
+                continue
+
+            try:
+                candidate.unlink()
+                removed.append(str(candidate))
+            except Exception as e:
+                failed.append(f"{candidate}: {e}")
+
+        self.db = self.db.__class__(db_path)
+        self.current_move_plan = None
+        self.current_cluster_id = None
+        self.manual_cluster_colors = {}
+        self.manual_cluster_color_index = 0
+        self.run_plan_btn.setEnabled(False)
+        self.thumbnail_grid.clear()
+        self.rename_input.clear()
+        self.rename_input.setEnabled(False)
+        self.save_name_btn.setEnabled(False)
+        self.grid_header.setText("<b>Cleanup complete. Scan a folder to start again.</b>")
+        self.load_clusters()
+
+        if failed:
+            QMessageBox.warning(
+                self,
+                "Cleanup Partially Failed",
+                "Some files could not be removed:\n\n" + "\n".join(failed[:8]),
+            )
+            self.update_status(f"Cleanup partial: {len(removed)} removed, {len(failed)} failed")
+            return
+
+        self.update_status(f"Cleanup complete: {len(removed)} removed")
+        QMessageBox.information(
+            self,
+            "Cleanup Complete",
+            "Removed:\n" + ("\n".join(removed) if removed else "Nothing to remove."),
+        )
 
     def handle_file_reassigned(self, file_path, new_cluster_id):
         """Updates the DB when a thumbnail is dropped onto a new cluster."""
+        if new_cluster_id == DELETE_CLUSTER_ID:
+            return
+
         cursor = self.db.conn.cursor()
         cursor.execute(
             "UPDATE files SET cluster_id = ? WHERE original_path = ?",
@@ -1313,6 +1444,16 @@ class ClustreeWindow(QMainWindow):
     def load_clusters(self):
         self.cluster_list.clear()
 
+        row_offset = 0
+        if self.settings.show_delete_cluster:
+            item = QListWidgetItem()
+            item.setData(Qt.ItemDataRole.UserRole, DELETE_CLUSTER_ID)
+            item.setData(Qt.ItemDataRole.UserRole + 1, 0)
+            item.setSizeHint(QSize(320, 50))
+            self.cluster_list.addItem(item)
+            self.cluster_list.setItemWidget(item, self._build_delete_cluster_row_widget())
+            row_offset = 1
+
         cursor = self.db.conn.cursor()
         cursor.execute(
             """
@@ -1331,7 +1472,7 @@ class ClustreeWindow(QMainWindow):
 
         self._sync_manual_cluster_colors(clusters)
 
-        for row_index, cluster in enumerate(clusters):
+        for row_index, cluster in enumerate(clusters, start=row_offset):
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, cluster["id"])
             item.setData(Qt.ItemDataRole.UserRole + 1, row_index)
@@ -1347,6 +1488,26 @@ class ClustreeWindow(QMainWindow):
     def _cluster_display_name(self, cluster):
         assigned_name = (cluster["assigned_name"] or "").strip()
         return assigned_name if assigned_name else f"Event {cluster['id']}"
+
+    def _build_delete_cluster_row_widget(self):
+        widget = QWidget()
+        widget.setObjectName("clusterRow")
+
+        outer = QVBoxLayout(widget)
+        outer.setContentsMargins(8, 6, 8, 6)
+        outer.setSpacing(2)
+
+        name_label = QLabel("Name: DELETE")
+        name_label.setObjectName("clusterName")
+
+        count_label = QLabel("Permanent delete target | empty")
+        count_label.setObjectName("clusterCount")
+
+        outer.addWidget(name_label)
+        outer.addWidget(count_label)
+
+        self._apply_cluster_row_style(widget, DELETE_CLUSTER_ID, 0, selected=False)
+        return widget
 
     def _is_manual_cluster(self, cluster):
         try:
@@ -1371,6 +1532,9 @@ class ClustreeWindow(QMainWindow):
                 self.manual_cluster_colors.pop(cluster_id, None)
 
     def _cluster_row_background(self, cluster_id, row_index):
+        if cluster_id == DELETE_CLUSTER_ID:
+            return DELETE_CLUSTER_COLOR
+
         if cluster_id in self.manual_cluster_colors:
             return self.manual_cluster_colors[cluster_id]
 
@@ -1466,7 +1630,26 @@ class ClustreeWindow(QMainWindow):
 
     def start_loading_cluster(self, item):
         cluster_id = item.data(Qt.ItemDataRole.UserRole)
+        if cluster_id == DELETE_CLUSTER_ID:
+            self.load_delete_cluster()
+            return
+
         self.load_cluster_by_id(cluster_id)
+
+    def load_delete_cluster(self):
+        if self.thumb_worker and self.thumb_worker.isRunning():
+            self.thumb_worker.stop()
+            self.thumb_worker.wait()
+
+        self.thumbnail_grid.clear()
+        self.current_cluster_id = DELETE_CLUSTER_ID
+        self._select_cluster_list_item(DELETE_CLUSTER_ID)
+        self.grid_header.setText("<b>DELETE cluster (empty)</b>")
+        self.rename_input.clear()
+        self.rename_input.setEnabled(False)
+        self.save_name_btn.setEnabled(False)
+        self.progress_bar.hide()
+        self.update_status("Viewing DELETE cluster")
 
     def load_cluster_by_id(self, cluster_id):
         if self.thumb_worker and self.thumb_worker.isRunning():
@@ -1488,7 +1671,7 @@ class ClustreeWindow(QMainWindow):
 
         cursor.execute(
             """
-            SELECT id, original_path
+            SELECT id, original_path, file_size
             FROM files
             WHERE cluster_id = ?
               AND status != 'archived'
@@ -1520,7 +1703,27 @@ class ClustreeWindow(QMainWindow):
         self.thumb_worker.finished.connect(self.progress_bar.hide)
         self.thumb_worker.start()
 
-    def add_thumbnail(self, file_id, file_path, file_name, qimage):
+    def _format_file_size(self, size_bytes):
+        try:
+            size_bytes = int(size_bytes or 0)
+        except (TypeError, ValueError):
+            size_bytes = 0
+
+        if size_bytes >= 1024 * 1024:
+            return f"{size_bytes / (1024 * 1024):.2f} MB"
+
+        if size_bytes >= 1024:
+            return f"{size_bytes / 1024:.0f} KB"
+
+        return f"{size_bytes} B"
+
+    def _thumbnail_label(self, file_name, file_size):
+        if not self.settings.show_thumbnail_file_info:
+            return ""
+
+        return f"{file_name}\n{self._format_file_size(file_size)}"
+
+    def add_thumbnail(self, file_id, file_path, file_name, file_size, qimage):
         thumb_item = QListWidgetItem()
 
         if not qimage.isNull():
@@ -1529,13 +1732,18 @@ class ClustreeWindow(QMainWindow):
         else:
             thumb_item.setText("Video File")
 
-        thumb_item.setToolTip(file_name)
+        label = self._thumbnail_label(file_name, file_size)
+        if label:
+            thumb_item.setText(label)
+
+        thumb_item.setToolTip(f"{file_name}\n{self._format_file_size(file_size)}\n{file_path}")
         thumb_item.setData(
             Qt.ItemDataRole.UserRole,
             {
                 "id": file_id,
                 "path": file_path,
                 "name": file_name,
+                "size": file_size,
             },
         )
 
@@ -1551,7 +1759,7 @@ class ClustreeWindow(QMainWindow):
 
         for item in self.cluster_list.selectedItems():
             cluster_id = item.data(Qt.ItemDataRole.UserRole)
-            if cluster_id is not None:
+            if cluster_id is not None and cluster_id != DELETE_CLUSTER_ID:
                 selected_raw.append(cluster_id)
 
         ordered = []
@@ -1575,6 +1783,9 @@ class ClustreeWindow(QMainWindow):
         item = self.cluster_list.itemAt(pos)
 
         if not item:
+            return
+
+        if item.data(Qt.ItemDataRole.UserRole) == DELETE_CLUSTER_ID:
             return
 
         if not item.isSelected():
@@ -1667,7 +1878,11 @@ class ClustreeWindow(QMainWindow):
             FROM clusters
             WHERE status != 'archived'
               AND file_count > 0
-            ORDER BY start_date ASC, id ASC
+            ORDER BY
+              CASE WHEN manual_kind = 'temp' THEN 0 ELSE 1 END,
+              CASE WHEN manual_kind = 'temp' THEN id END ASC,
+              start_date ASC,
+              id ASC
             """
         )
         return [row["id"] for row in cursor.fetchall()]
@@ -1823,6 +2038,14 @@ class ClustreeWindow(QMainWindow):
 
         menu = QMenu(self)
 
+        delete_action = None
+        if self.settings.show_delete_cluster:
+            delete_action = menu.addAction(f"DELETE selected permanently ({len(selected_file_ids)})")
+            font = delete_action.font()
+            font.setBold(True)
+            delete_action.setFont(font)
+            menu.addSeparator()
+
         new_temp_cluster_action = menu.addAction(f"Move selected to new temp cluster ({len(selected_file_ids)})")
         existing_cluster_actions = {}
         candidate_clusters = self._candidate_manual_target_clusters()
@@ -1843,7 +2066,9 @@ class ClustreeWindow(QMainWindow):
 
         action = menu.exec_(self.thumbnail_grid.mapToGlobal(pos))
 
-        if action == new_temp_cluster_action:
+        if delete_action and action == delete_action:
+            self.permanently_delete_selected_files(selected_file_ids)
+        elif action == new_temp_cluster_action:
             self.move_selected_thumbnails_to_temp_cluster(selected_file_ids)
         elif action in existing_cluster_actions:
             self.move_selected_thumbnails_to_existing_cluster(
@@ -1930,6 +2155,137 @@ class ClustreeWindow(QMainWindow):
             [self.current_cluster_id] + file_ids,
         )
         return cursor.fetchall()
+
+    def _selected_file_paths_in_current_cluster(self, cursor, file_ids):
+        if not self.current_cluster_id or not file_ids or self.current_cluster_id == DELETE_CLUSTER_ID:
+            return []
+
+        placeholders = ",".join("?" for _ in file_ids)
+        cursor.execute(
+            f"""
+            SELECT id, original_path
+            FROM files
+            WHERE cluster_id = ?
+              AND id IN ({placeholders})
+              AND status != 'archived'
+            ORDER BY computed_date ASC, id ASC
+            """,
+            [self.current_cluster_id] + file_ids,
+        )
+        return cursor.fetchall()
+
+    def _delete_files_from_source_and_database(self, cursor, file_rows):
+        result = {
+            "deleted": [],
+            "missing": [],
+            "failed": [],
+        }
+
+        for row in file_rows:
+            file_id = row["id"]
+            original_path = Path(row["original_path"])
+
+            try:
+                if original_path.exists():
+                    if not original_path.is_file():
+                        result["failed"].append(
+                            {"file_id": file_id, "path": str(original_path), "error": "Path is not a file"}
+                        )
+                        continue
+
+                    original_path.unlink()
+                    result["deleted"].append({"file_id": file_id, "path": str(original_path)})
+                else:
+                    result["missing"].append({"file_id": file_id, "path": str(original_path)})
+
+                cursor.execute("DELETE FROM files WHERE id = ?", (file_id,))
+
+            except Exception as e:
+                result["failed"].append(
+                    {"file_id": file_id, "path": str(original_path), "error": str(e)}
+                )
+
+        return result
+
+    def permanently_delete_selected_files(self, file_ids):
+        if not self.current_cluster_id or not file_ids or self.current_cluster_id == DELETE_CLUSTER_ID:
+            return
+
+        cursor = self.db.conn.cursor()
+        selected_files = self._selected_file_paths_in_current_cluster(cursor, file_ids)
+
+        if not selected_files:
+            QMessageBox.warning(
+                self,
+                "DELETE Failed",
+                "No selected files are still part of the current cluster.",
+            )
+            return
+
+        preview_paths = "\n".join(str(Path(row["original_path"]).name) for row in selected_files[:8])
+        extra = len(selected_files) - 8
+        if extra > 0:
+            preview_paths += f"\n...and {extra} more"
+
+        reply = QMessageBox.warning(
+            self,
+            "Really DELETE?",
+            f"Permanently delete {len(selected_files)} source file(s) and remove them from Clustree?\n\n"
+            f"{preview_paths}\n\nThis cannot be undone by Clustree.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+
+        if reply != QMessageBox.Yes:
+            return
+
+        source_cluster_id = self.current_cluster_id
+
+        try:
+            result = self._delete_files_from_source_and_database(cursor, selected_files)
+            self._recalculate_cluster_dates_and_count(cursor, source_cluster_id)
+            self.db.conn.commit()
+
+            self.invalidate_plan()
+            self.load_clusters()
+
+            deleted_count = len(result["deleted"])
+            missing_count = len(result["missing"])
+            failed_count = len(result["failed"])
+
+            cursor.execute(
+                "SELECT file_count FROM clusters WHERE id = ?",
+                (source_cluster_id,),
+            )
+            cluster = cursor.fetchone()
+            if cluster and cluster["file_count"] > 0:
+                self.load_cluster_by_id(source_cluster_id)
+            else:
+                self.thumbnail_grid.clear()
+                self.rename_input.clear()
+                self.rename_input.setEnabled(False)
+                self.save_name_btn.setEnabled(False)
+                self.current_cluster_id = None
+
+            self.update_status(
+                f"DELETE complete: {deleted_count} deleted, {missing_count} missing removed, {failed_count} failed"
+            )
+
+            QMessageBox.information(
+                self,
+                "DELETE Complete",
+                f"Deleted from disk: {deleted_count}\n"
+                f"Missing but removed from DB: {missing_count}\n"
+                f"Failed: {failed_count}",
+            )
+
+        except Exception as e:
+            self.db.conn.rollback()
+            QMessageBox.critical(
+                self,
+                "DELETE Failed",
+                f"Could not complete DELETE:\n{str(e)}",
+            )
 
     def _next_manual_cluster_color(self):
         color = MANUAL_CLUSTER_COLORS[self.manual_cluster_color_index % len(MANUAL_CLUSTER_COLORS)]
@@ -2223,7 +2579,7 @@ class ClustreeWindow(QMainWindow):
     # -------------------------------------------------------------------------
 
     def save_cluster_name(self):
-        if not self.current_cluster_id:
+        if not self.current_cluster_id or self.current_cluster_id == DELETE_CLUSTER_ID:
             return
 
         event_name = self.rename_input.text().strip()
@@ -2278,11 +2634,15 @@ class ClustreeWindow(QMainWindow):
 
         keep_original:
             20260512_121459_sakura_PXL_20260512_031459393.jpg
+
+        imagee_smart:
+            20260512_sakura_PXL_20260512_031459393.jpg
         """
         suffix = old_path.suffix
         computed_date = computed_date or "1970-01-01 00:00:00"
 
         date_part = computed_date.split(" ")[0]
+        imagee_date_part = date_part.replace("-", "")
         timestamp_part = computed_date.replace("-", "").replace(":", "").replace(" ", "_")
 
         if self.settings.rename_pattern == "timestamp":
@@ -2290,6 +2650,12 @@ class ClustreeWindow(QMainWindow):
 
         if self.settings.rename_pattern == "keep_original":
             return f"{timestamp_part}_{safe_name}_{old_path.name}"
+
+        if self.settings.rename_pattern == "imagee_smart":
+            if old_path.name.startswith(imagee_date_part):
+                return old_path.name
+
+            return f"{imagee_date_part}_{safe_name}_{old_path.name}"
 
         return f"{date_part}_{safe_name}_{sequence_number:03d}{suffix}"
 
