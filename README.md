@@ -105,6 +105,15 @@ On Windows, activation is usually:
 python main.py
 ```
 
+Build a fresh Windows folder bundle:
+
+```bat
+build.bat
+```
+
+The build script stops any running `Clustree.exe`, removes old `build/` and
+`dist/` outputs, then writes `dist\Clustree\Clustree.exe`.
+
 ---
 
 ## Current workflow
