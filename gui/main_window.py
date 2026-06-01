@@ -663,6 +663,12 @@ class ThumbnailWorker(QThread):
 class ThumbnailGridWidget(QListWidget):
     """Thumbnail grid with a compact drag image for multi-file reassignment."""
 
+    resized = pyqtSignal()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.resized.emit()
+
     def startDrag(self, supported_actions):
         items = self.selectedItems()
         if not items:
@@ -865,13 +871,14 @@ class ClustreeWindow(QMainWindow):
         self.thumbnail_grid.setViewMode(QListWidget.ViewMode.IconMode)
         self.thumbnail_grid.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.thumbnail_grid.setSpacing(10)
-        self.thumbnail_grid.setWordWrap(True)
+        self.thumbnail_grid.setWordWrap(False)
         self.thumbnail_grid.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.thumbnail_grid.setDragEnabled(True)
         self.thumbnail_grid.setAcceptDrops(False)
         self.thumbnail_grid.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.thumbnail_grid.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.thumbnail_grid.customContextMenuRequested.connect(self.show_thumbnail_context_menu)
+        self.thumbnail_grid.resized.connect(self.on_thumbnail_view_resized)
 
         name_layout = QHBoxLayout()
 
@@ -914,10 +921,8 @@ class ClustreeWindow(QMainWindow):
         thumb_size_layout = QHBoxLayout()
         thumb_size_layout.addWidget(QLabel("Thumb"))
         self.thumbnail_size_slider = QSlider(Qt.Orientation.Horizontal)
-        self.thumbnail_size_slider.setRange(64, 512)
-        self.thumbnail_size_slider.setSingleStep(16)
-        self.thumbnail_size_slider.setPageStep(32)
-        self.thumbnail_size_slider.setValue(self.settings.thumbnail_size)
+        self.thumbnail_size_slider.setSingleStep(1)
+        self.thumbnail_size_slider.setPageStep(1)
         self.thumbnail_size_slider.valueChanged.connect(self.on_thumbnail_size_slider_changed)
         self.thumbnail_size_slider.sliderReleased.connect(self.commit_thumbnail_size_slider)
         self.thumbnail_size_label = QLabel(f"{self.settings.thumbnail_size}px")
@@ -1076,14 +1081,15 @@ class ClustreeWindow(QMainWindow):
     def _apply_thumbnail_grid_settings(self):
         thumb_size = self.settings.thumbnail_size
         self.thumbnail_grid.setIconSize(QSize(thumb_size, thumb_size))
+        self._sync_thumbnail_slider_steps()
         if hasattr(self, "thumbnail_size_slider"):
             self.thumbnail_size_slider.blockSignals(True)
-            self.thumbnail_size_slider.setValue(thumb_size)
+            self.thumbnail_size_slider.setValue(self._thumbnail_slider_index_for_size(thumb_size))
             self.thumbnail_size_slider.blockSignals(False)
             self.thumbnail_size_label.setText(f"{thumb_size}px")
 
         if self.settings.show_thumbnail_file_info:
-            self.thumbnail_grid.setGridSize(QSize(max(thumb_size + 116, 232), thumb_size + 104))
+            self.thumbnail_grid.setGridSize(QSize(thumb_size + 42, thumb_size + 76))
         else:
             self.thumbnail_grid.setGridSize(QSize(thumb_size + 34, thumb_size + 42))
 
@@ -1094,6 +1100,7 @@ class ClustreeWindow(QMainWindow):
             selected_background = "#173b52"
             selected_border = "#6bb6e8"
             selected_text = "#f4f7fb"
+            item_text = "#edf0f5"
         else:
             grid_background = "#f6f7f8"
             item_background = "#ffffff"
@@ -1101,6 +1108,7 @@ class ClustreeWindow(QMainWindow):
             selected_background = "#dbeafe"
             selected_border = "#3178c6"
             selected_text = "#111111"
+            item_text = "#111111"
 
         self.thumbnail_grid.setStyleSheet(
             f"""
@@ -1113,25 +1121,68 @@ class ClustreeWindow(QMainWindow):
                 border: 1px solid {item_border};
                 padding: 6px;
                 margin: 4px;
+                color: {item_text};
             }}
             QListWidget::item:selected {{
                 background: {selected_background};
                 border: 2px solid {selected_border};
                 color: {selected_text};
             }}
+            QListWidget::item:selected:active {{
+                background: {selected_background};
+                color: {selected_text};
+            }}
+            QListWidget::item:selected:!active {{
+                background: {selected_background};
+                color: {selected_text};
+            }}
             """
         )
 
+    def _thumbnail_card_width_for_size(self, thumb_size):
+        return thumb_size + (42 if self.settings.show_thumbnail_file_info else 34)
+
+    def _sync_thumbnail_slider_steps(self):
+        if not hasattr(self, "thumbnail_size_slider"):
+            return
+
+        viewport_width = max(self.thumbnail_grid.viewport().width(), 420)
+        possible_sizes = set()
+
+        for columns in range(2, 9):
+            usable_width = max(64, int((viewport_width - 18) / columns) - 42)
+            snapped = int(round(usable_width / 16) * 16)
+            possible_sizes.add(max(64, min(512, snapped)))
+
+        possible_sizes.update({64, 96, 128, 160, 200, 240, 288, 336, 400, 512})
+        self.thumbnail_size_steps = sorted(possible_sizes)
+
+        self.thumbnail_size_slider.blockSignals(True)
+        self.thumbnail_size_slider.setRange(0, len(self.thumbnail_size_steps) - 1)
+        self.thumbnail_size_slider.setValue(self._thumbnail_slider_index_for_size(self.settings.thumbnail_size))
+        self.thumbnail_size_slider.blockSignals(False)
+
+    def _thumbnail_slider_index_for_size(self, thumb_size):
+        steps = getattr(self, "thumbnail_size_steps", [self.settings.thumbnail_size])
+        return min(range(len(steps)), key=lambda index: abs(steps[index] - thumb_size))
+
+    def _thumbnail_size_from_slider(self):
+        steps = getattr(self, "thumbnail_size_steps", [self.settings.thumbnail_size])
+        index = max(0, min(self.thumbnail_size_slider.value(), len(steps) - 1))
+        return steps[index]
+
+    def on_thumbnail_view_resized(self):
+        old_steps = getattr(self, "thumbnail_size_steps", None)
+        self._sync_thumbnail_slider_steps()
+        if old_steps != getattr(self, "thumbnail_size_steps", None):
+            self._apply_thumbnail_grid_settings()
+
     def on_thumbnail_size_slider_changed(self, value):
-        snapped = int(round(value / 16) * 16)
-        snapped = max(64, min(512, snapped))
-        self.thumbnail_size_label.setText(f"{snapped}px")
+        self.thumbnail_size_label.setText(f"{self._thumbnail_size_from_slider()}px")
 
     def commit_thumbnail_size_slider(self):
-        snapped = int(round(self.thumbnail_size_slider.value() / 16) * 16)
-        snapped = max(64, min(512, snapped))
+        snapped = self._thumbnail_size_from_slider()
         if snapped == self.settings.thumbnail_size:
-            self.thumbnail_size_slider.setValue(snapped)
             return
 
         self.settings.thumbnail_size = snapped
@@ -2022,7 +2073,25 @@ class ClustreeWindow(QMainWindow):
         if not self.settings.show_thumbnail_file_info:
             return ""
 
-        return f"{file_name}\n{self._format_file_size(file_size)}"
+        return f"{self._elide_thumbnail_name(file_name)}\n{self._format_file_size(file_size)}"
+
+    def _elide_thumbnail_name(self, file_name):
+        max_chars = max(14, int((self._thumbnail_card_width_for_size(self.settings.thumbnail_size) - 18) / 7))
+        if len(file_name) <= max_chars:
+            return file_name
+
+        path = Path(file_name)
+        suffix = path.suffix
+        stem = path.stem
+        suffix_budget = min(len(suffix), 8)
+        stem_budget = max(8, max_chars - suffix_budget - 1)
+
+        if len(stem) <= stem_budget:
+            return file_name[:max_chars]
+
+        front = max(4, int(stem_budget * 0.6))
+        back = max(3, stem_budget - front - 3)
+        return f"{stem[:front]}...{stem[-back:]}{suffix[:suffix_budget]}"
 
     def add_thumbnail(self, file_id, file_path, file_name, file_size, qimage):
         thumb_item = QListWidgetItem()
