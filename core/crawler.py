@@ -64,7 +64,7 @@ class Crawler:
                 (old_hash, old_is_duplicate, row['id']),
             )
 
-    def scan_directory(self, target_dir: str):
+    def scan_directory(self, target_dir: str, progress_callback=None):
         """Recursively finds media files, hashes only duplicate-size candidates, and inserts them into the DB."""
         target_path = Path(target_dir)
         cursor = self.db.conn.cursor()
@@ -79,6 +79,8 @@ class Crawler:
             cursor.execute("SELECT id FROM files WHERE original_path = ?", (original_path,))
             if cursor.fetchone():
                 skipped += 1
+                if progress_callback and scanned % 100 == 0:
+                    progress_callback(scanned, inserted, skipped)
                 continue
 
             # Size-first dedupe: unique sizes cannot be exact duplicates, so do not hash them yet.
@@ -109,5 +111,17 @@ class Crawler:
                 self.db.conn.commit()
                 print(f"Indexed batch: {inserted} new files ({scanned} scanned, {skipped} skipped)")
 
+            if progress_callback and scanned % 100 == 0:
+                progress_callback(scanned, inserted, skipped)
+
         self.db.conn.commit()
+        if progress_callback:
+            progress_callback(scanned, inserted, skipped)
+
         print(f"Scan complete: {inserted} new files indexed, {skipped} already known, {scanned} media files seen.")
+
+        return {
+            "scanned": scanned,
+            "inserted": inserted,
+            "skipped": skipped,
+        }

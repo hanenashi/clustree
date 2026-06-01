@@ -28,7 +28,12 @@ Implemented now:
 - Configurable cluster gap presets.
 - Configurable thumbnail size.
 - Configurable rename pattern.
+- Configurable staging/output root for manual promotion into a stable photo pool.
+- GUI phase messages during scan/date/cluster ingestion.
+- GUI ingestion progress counts for scanning, date extraction, and clustering.
 - PyQt thumbnail triage UI.
+- Thumbnail cache in `.clustree_cache/thumbs/`.
+- Optional video thumbnails via `ffmpeg`.
 - Drag thumbnails between clusters.
 - Right-click thumbnail split:
   - split before this photo
@@ -39,19 +44,30 @@ Implemented now:
   - merge with next cluster
 - Cluster names saved without moving files immediately.
 - Dry-run move plan preview.
+- Event-folder checklist in move plan preview.
+- Staging date audit for multi-day events and OS-timestamp fallbacks.
 - Move plan JSON export.
 - Confirmed `Run Plan` action.
+- Compact multi-thumbnail drag preview.
+- Highlighted cluster drop target during thumbnail reassignment.
+- Duplicate review screen for exact hash groups.
+- Confirmed duplicate cleanup into per-folder `_TRASH_DUPLICATES`.
+- Duplicate cleanup archive in `.clustree_cache/duplicate_runs/`.
+- `Undo Dupes` rollback from the latest duplicate cleanup archive.
 - Collision-safe output paths.
+- Same-stem `.AAE` sidecar moves for iPhone imports.
+- Move-plan warnings for existing target folders, target collisions, missing sources, and output-root issues.
+- Move-plan warnings for date-audit issues before staging.
+- Created-folder paths recorded in executed-plan JSON.
+- Executed-plan archive in `.clustree_cache/executed_plans/`.
+- Rollback move data recorded in executed-plan JSON.
+- `Undo Last Run` rollback from the latest executed-plan archive.
+- Optional prompt to open created folders after a run.
 - Basic missing-file handling.
 
 Still rough:
 
-- No thumbnail cache yet.
-- Video thumbnails are placeholders only.
-- No ffprobe video creation-time extraction yet.
-- No duplicate review screen yet.
-- No undo / rollback from executed plan yet.
-- Plan preview is plain text, not a nice table.
+- Video thumbnails fall back to placeholders when `ffmpeg` is unavailable.
 
 ---
 
@@ -130,6 +146,7 @@ Current settings:
 - custom cluster gap hours
 - thumbnail size
 - rename pattern
+- staging/output root
 
 Cluster gap presets:
 
@@ -155,7 +172,16 @@ Default is clean sequence.
 
 ## Output
 
-Current output folder pattern:
+Current staging/output folder pattern:
+
+```text
+<staging/output root>\YYYY\YYYY MM.DD Event Name
+```
+
+Use a staging folder when you want to inspect generated event folders before
+manually moving them into a stable pool such as `E:\FOTO`.
+
+If staging/output root is empty, Clustree keeps the older source-adjacent pattern:
 
 ```text
 YYYY-MM-DD_Event_Name
@@ -168,6 +194,38 @@ YYYY-MM-DD_Event_Name_001.ext
 ```
 
 If a target filename already exists, Clustree appends `_2`, `_3`, etc.
+
+Same-stem iPhone `.AAE` sidecars follow the renamed media file when present.
+For example, `IMG_1234.JPG` and `IMG_1234.AAE` become matching target stems.
+
+The move preview audits staged event folders before anything moves. It flags
+multi-day clusters, folder/file date mismatches, missing computed dates, and
+files dated only from OS timestamps.
+
+After a run, Clustree writes the executed-plan JSON into
+`.clustree_cache/executed_plans/`. The result records created target folders and
+reverse move data. `Undo Last Run` reads the latest archive, refuses unsafe
+overwrites, moves files back, restores media rows to `clustered`, and reactivates
+archived clusters when the rollback completes without failures. Rollback result
+JSON is written under `.clustree_cache/rollback_results/`. Clustree can open up
+to five created folders on request.
+
+Thumbnails are cached under `.clustree_cache/thumbs/`. The cache key includes
+file path, file size, modified time, and configured thumbnail size, so edited
+or resized source files regenerate thumbnails automatically.
+
+If `ffmpeg` is available on `PATH`, Clustree extracts cached thumbnail frames
+for `.mp4`, `.mov`, and `.avi` files. Without `ffmpeg`, videos keep the plain
+placeholder thumbnail.
+
+The Duplicate Review screen lists exact duplicate groups that already have
+computed hashes. Clustree keeps the first ordered file in each exact hash group
+as primary. Review rows can be moved into a `_TRASH_DUPLICATES` folder beside
+their current source folder after confirmation. Cleanup results, warnings, and
+reverse move data are written under `.clustree_cache/duplicate_runs/`.
+`Undo Dupes` reads the latest cleanup archive, refuses unsafe overwrites, moves
+files back, restores rows to `clustered`, and writes rollback results under
+`.clustree_cache/duplicate_rollbacks/`.
 
 ---
 
@@ -191,17 +249,7 @@ run.sh                  Unix/macOS/Termux launcher
 
 Next useful chunks:
 
-- Better plan preview table.
-- Thumbnail cache in `.clustree_cache/thumbs/`.
-- Real video thumbnails via ffmpeg.
-- Video creation-time extraction via ffprobe.
-- Duplicate review screen.
-- Move duplicates to `_TRASH_DUPLICATES` after review.
-- Executed-plan archive.
-- Undo / rollback where possible.
-- Output destination selector.
-- Open created folder after run.
-- Better GUI progress reporting.
+- Real-world polish after a larger import dry run.
 
 ---
 

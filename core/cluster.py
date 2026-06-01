@@ -26,7 +26,10 @@ class ClusterEngine:
         if not rows:
             self.db.conn.commit()
             print("No files available to cluster.")
-            return
+            return {
+                "clusters": 0,
+                "files": 0,
+            }
 
         clusters = []
         current_cluster = []
@@ -58,7 +61,7 @@ class ClusterEngine:
         if current_cluster:
             clusters.append(current_cluster)
 
-        self._save_clusters(clusters)
+        return self._save_clusters(clusters)
 
     def _reset_pending_clusters(self, cursor):
         """Deletes rebuildable clusters so repeated scans do not create stale duplicates."""
@@ -93,4 +96,11 @@ class ClusterEngine:
             ''', file_ids)
             
         self.db.conn.commit()
-        print(f"Created {len(clusters)} magic clusters from {sum(len(c) for c in clusters)} files.")
+
+        clustered_files = sum(len(c) for c in clusters)
+        print(f"Created {len(clusters)} magic clusters from {clustered_files} files.")
+
+        return {
+            "clusters": len(clusters),
+            "files": clustered_files,
+        }

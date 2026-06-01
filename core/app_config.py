@@ -22,6 +22,7 @@ RENAME_PATTERN_OPTIONS = {
 }
 
 DEFAULT_RENAME_PATTERN = "clean_sequence"
+DEFAULT_OUTPUT_ROOT = ""
 
 
 @dataclass
@@ -30,6 +31,7 @@ class AppSettings:
     cluster_gap_hours: int = 12
     thumbnail_size: int = 200
     rename_pattern: str = DEFAULT_RENAME_PATTERN
+    output_root: str = DEFAULT_OUTPUT_ROOT
 
     def normalize(self):
         """Keeps settings sane after loading older or hand-edited JSON."""
@@ -64,6 +66,8 @@ class AppSettings:
         valid_patterns = set(RENAME_PATTERN_OPTIONS.values())
         if self.rename_pattern not in valid_patterns:
             self.rename_pattern = DEFAULT_RENAME_PATTERN
+
+        self.output_root = str(self.output_root or "").strip()
 
         return self
 
