@@ -33,6 +33,7 @@ Implemented now:
 - GUI ingestion progress counts for scanning, date extraction, and clustering.
 - PyQt thumbnail triage UI.
 - Thumbnail cache in `.clustree_cache/thumbs/`.
+- EXIF orientation-aware image thumbnails.
 - Optional video thumbnails via `ffmpeg`.
 - Drag thumbnails between clusters.
 - Right-click thumbnail split:
@@ -216,6 +217,8 @@ to five created folders on request.
 Thumbnails are cached under `.clustree_cache/thumbs/`. The cache key includes
 file path, file size, modified time, and configured thumbnail size, so edited
 or resized source files regenerate thumbnails automatically.
+JPEG orientation metadata is applied before image thumbnails are cached, so
+portrait phone photos should display upright in the triage grid.
 
 If `ffmpeg` is available on `PATH`, Clustree extracts cached thumbnail frames
 for `.mp4`, `.mov`, and `.avi` files. Without `ffmpeg`, videos keep the plain

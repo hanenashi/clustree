@@ -24,6 +24,7 @@ from PyQt5.QtGui import (
     QDrag, QPainter, QColor, QBrush
 )
 from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal, QUrl
+from PIL import Image, ImageOps
 
 from core.app_config import (
     APP_VERSION,
@@ -40,6 +41,7 @@ from core.cluster import ClusterEngine
 
 IMAGE_THUMBNAIL_EXTENSIONS = (".jpg", ".jpeg", ".png")
 VIDEO_THUMBNAIL_EXTENSIONS = (".mp4", ".mov", ".avi")
+THUMBNAIL_CACHE_VERSION = "thumb-v2-exif-transpose"
 
 
 class SettingsDialog(QDialog):
@@ -478,6 +480,7 @@ class ThumbnailWorker(QThread):
                 str(stat.st_mtime_ns),
                 str(stat.st_size),
                 str(self.thumbnail_size),
+                THUMBNAIL_CACHE_VERSION,
             ]
         )
         digest = hashlib.sha256(payload.encode("utf-8", errors="ignore")).hexdigest()
@@ -502,7 +505,7 @@ class ThumbnailWorker(QThread):
             if not cached.isNull():
                 return cached
 
-        img = QImage(file_path)
+        img = self._load_image_with_exif_orientation(file_path)
         if img.isNull():
             return QImage()
 
@@ -516,6 +519,26 @@ class ThumbnailWorker(QThread):
         self._save_thumbnail_cache(cache_path, img)
 
         return img
+
+    def _load_image_with_exif_orientation(self, file_path: str):
+        try:
+            with Image.open(file_path) as pil_image:
+                pil_image = ImageOps.exif_transpose(pil_image)
+                pil_image = pil_image.convert("RGBA")
+                width, height = pil_image.size
+                image_bytes = pil_image.tobytes("raw", "RGBA")
+        except Exception:
+            return QImage(file_path)
+
+        qimage = QImage(
+            image_bytes,
+            width,
+            height,
+            width * 4,
+            QImage.Format_RGBA8888,
+        )
+
+        return qimage.copy()
 
     def _load_or_create_video_thumbnail(self, file_path: str):
         cache_path = self._cache_path_for(file_path)
