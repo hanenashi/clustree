@@ -39,7 +39,8 @@ Implemented now:
   - split before this photo
   - split after this photo
 - Right-click selected thumbnails:
-  - move selected to a temp manual cluster for date-independent repeated subjects
+  - move selected to a new temp manual cluster for date-independent repeated subjects
+  - move selected into an existing manual cluster
 - Right-click cluster-list merge:
   - merge selected clusters
   - merge with previous cluster
@@ -230,9 +231,11 @@ files back, restores rows to `clustered`, and writes rollback results under
 `.clustree_cache/duplicate_rollbacks/`.
 
 For repeated everyday subjects that should not be grouped by capture date, select
-thumbnails inside an event and use `Move selected to temp cluster` from the
+thumbnails inside an event and use `Move selected to new temp cluster` from the
 thumbnail context menu. Clustree creates a normal pending cluster from that
-manual selection; name it like any other event before previewing/exporting.
+manual selection; name it like any other event before previewing/exporting. To
+keep adding more shots to that subject later, use `Move selected to existing
+cluster` from the same menu.
 
 ---
 

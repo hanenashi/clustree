@@ -1620,15 +1620,28 @@ class ClustreeWindow(QMainWindow):
 
         menu = QMenu(self)
 
-        temp_cluster_action = menu.addAction(f"Move selected to temp cluster ({len(selected_file_ids)})")
+        new_temp_cluster_action = menu.addAction(f"Move selected to new temp cluster ({len(selected_file_ids)})")
+        existing_cluster_actions = {}
+        candidate_clusters = self._candidate_manual_target_clusters()
+        if candidate_clusters:
+            existing_menu = menu.addMenu("Move selected to existing cluster")
+            for cluster in candidate_clusters:
+                action = existing_menu.addAction(self._cluster_menu_label(cluster))
+                existing_cluster_actions[action] = cluster["id"]
+
         menu.addSeparator()
         split_before_action = menu.addAction(f"Split before {file_name}")
         split_after_action = menu.addAction(f"Split after {file_name}")
 
         action = menu.exec_(self.thumbnail_grid.mapToGlobal(pos))
 
-        if action == temp_cluster_action:
+        if action == new_temp_cluster_action:
             self.move_selected_thumbnails_to_temp_cluster(selected_file_ids)
+        elif action in existing_cluster_actions:
+            self.move_selected_thumbnails_to_existing_cluster(
+                selected_file_ids,
+                existing_cluster_actions[action],
+            )
         elif action == split_before_action:
             self.split_current_cluster_at_file(file_id=file_id, clicked_file_goes_to_new=True)
         elif action == split_after_action:
@@ -1648,12 +1661,34 @@ class ClustreeWindow(QMainWindow):
 
         return file_ids
 
-    def move_selected_thumbnails_to_temp_cluster(self, file_ids):
-        """Creates a manual cluster from the selected thumbnails, independent of date gaps."""
-        if not self.current_cluster_id or not file_ids:
-            return
-
+    def _candidate_manual_target_clusters(self):
         cursor = self.db.conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, start_date, file_count, assigned_name
+            FROM clusters
+            WHERE status != 'archived'
+              AND file_count > 0
+              AND id != ?
+            ORDER BY
+              CASE WHEN assigned_name IS NULL OR TRIM(assigned_name) = '' THEN 0 ELSE 1 END,
+              start_date ASC,
+              id ASC
+            """,
+            (self.current_cluster_id,),
+        )
+        return cursor.fetchall()
+
+    def _cluster_menu_label(self, cluster):
+        date_label = cluster["start_date"].split(" ")[0] if cluster["start_date"] else "unknown-date"
+        name = (cluster["assigned_name"] or "").strip()
+        name_label = name if name else "temp unnamed"
+        return f"Event {cluster['id']} ({date_label}, {cluster['file_count']} files) - {name_label}"
+
+    def _selected_files_in_current_cluster(self, cursor, file_ids):
+        if not self.current_cluster_id or not file_ids:
+            return []
+
         placeholders = ",".join("?" for _ in file_ids)
         cursor.execute(
             f"""
@@ -1666,7 +1701,15 @@ class ClustreeWindow(QMainWindow):
             """,
             [self.current_cluster_id] + file_ids,
         )
-        selected_files = cursor.fetchall()
+        return cursor.fetchall()
+
+    def move_selected_thumbnails_to_temp_cluster(self, file_ids):
+        """Creates a manual cluster from the selected thumbnails, independent of date gaps."""
+        if not self.current_cluster_id or not file_ids:
+            return
+
+        cursor = self.db.conn.cursor()
+        selected_files = self._selected_files_in_current_cluster(cursor, file_ids)
 
         if not selected_files:
             QMessageBox.warning(
@@ -1719,6 +1762,56 @@ class ClustreeWindow(QMainWindow):
                 self,
                 "Temp Cluster Failed",
                 f"Could not create temp cluster:\n{str(e)}",
+            )
+
+    def move_selected_thumbnails_to_existing_cluster(self, file_ids, target_cluster_id):
+        """Moves selected thumbnails into an already-existing manual target cluster."""
+        if not self.current_cluster_id or not file_ids or target_cluster_id == self.current_cluster_id:
+            return
+
+        cursor = self.db.conn.cursor()
+        selected_files = self._selected_files_in_current_cluster(cursor, file_ids)
+
+        if not selected_files:
+            QMessageBox.warning(
+                self,
+                "Move Failed",
+                "No selected files are still part of the current cluster.",
+            )
+            return
+
+        selected_ids = [row["id"] for row in selected_files]
+
+        try:
+            placeholders = ",".join("?" for _ in selected_ids)
+            cursor.execute(
+                f"""
+                UPDATE files
+                SET cluster_id = ?
+                WHERE id IN ({placeholders})
+                """,
+                [target_cluster_id] + selected_ids,
+            )
+
+            source_cluster_id = self.current_cluster_id
+            self._recalculate_cluster_dates_and_count(cursor, source_cluster_id)
+            self._recalculate_cluster_dates_and_count(cursor, target_cluster_id)
+            self.db.conn.commit()
+
+            self.invalidate_plan()
+            self.load_clusters()
+            self.load_cluster_by_id(target_cluster_id)
+
+            self.update_status(
+                f"Moved {len(selected_ids)} file(s) into Event {target_cluster_id}"
+            )
+
+        except Exception as e:
+            self.db.conn.rollback()
+            QMessageBox.critical(
+                self,
+                "Move Failed",
+                f"Could not move files to existing cluster:\n{str(e)}",
             )
 
     def split_current_cluster_at_file(self, file_id, clicked_file_goes_to_new):
