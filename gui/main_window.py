@@ -13,7 +13,8 @@ from PyQt5.QtWidgets import (
     QLineEdit, QPushButton, QMessageBox, QFileDialog,
     QDialog, QFormLayout, QComboBox, QSpinBox, QDialogButtonBox,
     QPlainTextEdit, QMenu, QTableWidget, QTableWidgetItem,
-    QHeaderView, QAbstractItemView, QInputDialog, QCheckBox
+    QHeaderView, QAbstractItemView, QInputDialog, QCheckBox,
+    QSplitter, QTextEdit, QApplication
 )
 
 # Silence the High Sierra SIP deprecation warning
@@ -68,6 +69,7 @@ class SettingsDialog(QDialog):
             rename_pattern=settings.rename_pattern,
             output_root=settings.output_root,
             show_delete_cluster=settings.show_delete_cluster,
+            show_log_pane=settings.show_log_pane,
         ).normalize()
 
         layout = QVBoxLayout(self)
@@ -133,6 +135,10 @@ class SettingsDialog(QDialog):
         self.show_delete_cluster_check.setChecked(self.settings.show_delete_cluster)
         form.addRow("DELETE cluster:", self.show_delete_cluster_check)
 
+        self.show_log_pane_check = QCheckBox("Show bottom log pane")
+        self.show_log_pane_check.setChecked(self.settings.show_log_pane)
+        form.addRow("Log pane:", self.show_log_pane_check)
+
         layout.addLayout(form)
 
         self.cleanup_btn = QPushButton("CLEANUP")
@@ -167,6 +173,7 @@ class SettingsDialog(QDialog):
             rename_pattern=RENAME_PATTERN_OPTIONS.get(rename_label, "clean_sequence"),
             output_root=self.output_root_input.text().strip(),
             show_delete_cluster=self.show_delete_cluster_check.isChecked(),
+            show_log_pane=self.show_log_pane_check.isChecked(),
         ).normalize()
 
     def browse_output_root(self):
@@ -748,11 +755,6 @@ class ClusterListWidget(QListWidget):
             return
 
         new_cluster_id = target_item.data(Qt.ItemDataRole.UserRole)
-        if new_cluster_id == DELETE_CLUSTER_ID:
-            self._clear_drop_target_item()
-            event.ignore()
-            return
-
         source_widget = event.source()
 
         for item in source_widget.selectedItems():
@@ -760,10 +762,15 @@ class ClusterListWidget(QListWidget):
 
             if isinstance(payload, dict):
                 file_path = payload.get("path")
+                old_cluster_id = payload.get("cluster_id")
             else:
                 file_path = payload
+                old_cluster_id = None
 
             if not file_path:
+                continue
+
+            if old_cluster_id == new_cluster_id:
                 continue
 
             self.file_reassigned.emit(file_path, new_cluster_id)
@@ -792,10 +799,16 @@ class ClustreeWindow(QMainWindow):
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        main_layout = QHBoxLayout(central_widget)
+        root_layout = QVBoxLayout(central_widget)
+        root_layout.setContentsMargins(6, 6, 6, 6)
+
+        self.vertical_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.vertical_splitter.addWidget(self.main_splitter)
 
         # --- Left Panel: Cluster List & Controls ---
-        left_panel = QVBoxLayout()
+        left_panel_widget = QWidget()
+        left_panel = QVBoxLayout(left_panel_widget)
 
         left_header_layout = QHBoxLayout()
         left_header_layout.addWidget(QLabel("<b>Detected Events</b>"))
@@ -811,7 +824,7 @@ class ClustreeWindow(QMainWindow):
         left_panel.addLayout(left_header_layout)
 
         self.cluster_list = ClusterListWidget()
-        self.cluster_list.setFixedWidth(330)
+        self.cluster_list.setMinimumWidth(220)
         self.cluster_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.cluster_list.itemClicked.connect(self.start_loading_cluster)
         self.cluster_list.file_reassigned.connect(self.handle_file_reassigned)
@@ -820,10 +833,11 @@ class ClustreeWindow(QMainWindow):
         self.cluster_list.itemSelectionChanged.connect(self.refresh_cluster_list_styles)
 
         left_panel.addWidget(self.cluster_list)
-        main_layout.addLayout(left_panel)
+        self.main_splitter.addWidget(left_panel_widget)
 
         # --- Right Panel: Triage & Rename ---
-        right_panel = QVBoxLayout()
+        right_panel_widget = QWidget()
+        right_panel = QVBoxLayout(right_panel_widget)
 
         self.grid_header = QLabel("<b>Select a cluster to view media...</b>")
 
@@ -883,15 +897,44 @@ class ClustreeWindow(QMainWindow):
         plan_layout.addWidget(self.undo_duplicate_btn)
 
         right_panel.addWidget(self.grid_header)
+        right_panel.addLayout(name_layout)
         right_panel.addWidget(self.progress_bar)
         right_panel.addWidget(self.thumbnail_grid)
-        right_panel.addLayout(name_layout)
         right_panel.addLayout(plan_layout)
 
-        main_layout.addLayout(right_panel)
+        self.main_splitter.addWidget(right_panel_widget)
+        self.main_splitter.setSizes([330, 870])
+
+        self.log_panel = QWidget()
+        log_layout = QVBoxLayout(self.log_panel)
+        log_layout.setContentsMargins(0, 0, 0, 0)
+
+        log_toolbar = QHBoxLayout()
+        log_toolbar.addWidget(QLabel("<b>Log</b>"))
+        log_toolbar.addStretch(1)
+
+        self.copy_log_btn = QPushButton("Copy Log")
+        self.copy_log_btn.clicked.connect(self.copy_log)
+        self.clear_log_btn = QPushButton("Clear Log")
+        self.clear_log_btn.clicked.connect(self.clear_log)
+
+        log_toolbar.addWidget(self.copy_log_btn)
+        log_toolbar.addWidget(self.clear_log_btn)
+
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setMinimumHeight(80)
+
+        log_layout.addLayout(log_toolbar)
+        log_layout.addWidget(self.log_text)
+
+        self.vertical_splitter.addWidget(self.log_panel)
+        self.vertical_splitter.setSizes([650, 150])
+        root_layout.addWidget(self.vertical_splitter)
 
         self.statusBar()
         self._apply_thumbnail_grid_settings()
+        self._apply_log_visibility()
         self.update_status()
         self.load_clusters()
 
@@ -907,6 +950,28 @@ class ClustreeWindow(QMainWindow):
             f"DELETE: {'on' if self.settings.show_delete_cluster else 'off'} | "
             f"Staging: {output_label}"
         )
+        self.append_log(message)
+
+    def append_log(self, message):
+        if not hasattr(self, "log_text") or not message:
+            return
+
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.log_text.append(f"[{timestamp}] {message}")
+
+    def copy_log(self):
+        if hasattr(self, "log_text"):
+            QApplication.clipboard().setText(self.log_text.toPlainText())
+            self.update_status("Log copied")
+
+    def clear_log(self):
+        if hasattr(self, "log_text"):
+            self.log_text.clear()
+            self.update_status("Log cleared")
+
+    def _apply_log_visibility(self):
+        if hasattr(self, "log_panel"):
+            self.log_panel.setVisible(self.settings.show_log_pane)
 
     def invalidate_plan(self):
         self.current_move_plan = None
@@ -920,6 +985,26 @@ class ClustreeWindow(QMainWindow):
             self.thumbnail_grid.setGridSize(QSize(thumb_size + 74, thumb_size + 58))
         else:
             self.thumbnail_grid.setGridSize(QSize(thumb_size + 26, thumb_size + 28))
+
+        self.thumbnail_grid.setStyleSheet(
+            """
+            QListWidget {
+                background: #f6f7f8;
+                border: 1px solid #d4d7dc;
+            }
+            QListWidget::item {
+                background: #ffffff;
+                border: 1px solid #cfd4dc;
+                padding: 6px;
+                margin: 4px;
+            }
+            QListWidget::item:selected {
+                background: #dbeafe;
+                border: 2px solid #3178c6;
+                color: #111111;
+            }
+            """
+        )
 
     def build_duplicate_groups(self):
         cursor = self.db.conn.cursor()
@@ -1295,6 +1380,7 @@ class ClustreeWindow(QMainWindow):
         save_settings(self.settings)
 
         self._apply_thumbnail_grid_settings()
+        self._apply_log_visibility()
         self.invalidate_plan()
         self.load_clusters()
         if self.current_cluster_id == DELETE_CLUSTER_ID and not self.settings.show_delete_cluster:
@@ -1387,16 +1473,54 @@ class ClustreeWindow(QMainWindow):
 
     def handle_file_reassigned(self, file_path, new_cluster_id):
         """Updates the DB when a thumbnail is dropped onto a new cluster."""
-        if new_cluster_id == DELETE_CLUSTER_ID:
-            return
-
         cursor = self.db.conn.cursor()
         cursor.execute(
-            "UPDATE files SET cluster_id = ? WHERE original_path = ?",
+            "SELECT cluster_id, status FROM files WHERE original_path = ?",
+            (file_path,),
+        )
+        file_row = cursor.fetchone()
+
+        if not file_row:
+            return
+
+        old_cluster_id = file_row["cluster_id"]
+        if old_cluster_id == new_cluster_id:
+            self.append_log(f"Ignored same-cluster drop: {Path(file_path).name}")
+            return
+
+        if new_cluster_id == DELETE_CLUSTER_ID:
+            cursor.execute(
+                """
+                UPDATE files
+                SET cluster_id = ?,
+                    delete_origin_cluster_id = ?,
+                    status = 'delete_pending'
+                WHERE original_path = ?
+                """,
+                (DELETE_CLUSTER_ID, old_cluster_id, file_path),
+            )
+            if old_cluster_id is not None:
+                self._recalculate_cluster_dates_and_count(cursor, old_cluster_id)
+            self.db.conn.commit()
+            self.invalidate_plan()
+            self.load_clusters()
+            self.update_status(f"Moved to DELETE: {Path(file_path).name}")
+            return
+
+        cursor.execute(
+            """
+            UPDATE files
+            SET cluster_id = ?,
+                delete_origin_cluster_id = NULL,
+                status = 'pending'
+            WHERE original_path = ?
+            """,
             (new_cluster_id, file_path),
         )
 
-        self._recalculate_all_cluster_counts(cursor)
+        if old_cluster_id is not None:
+            self._recalculate_cluster_dates_and_count(cursor, old_cluster_id)
+        self._recalculate_cluster_dates_and_count(cursor, new_cluster_id)
         self.db.conn.commit()
 
         self.invalidate_plan()
@@ -1451,12 +1575,13 @@ class ClustreeWindow(QMainWindow):
 
         row_offset = 0
         if self.settings.show_delete_cluster:
+            delete_count = self._delete_pending_count()
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, DELETE_CLUSTER_ID)
             item.setData(Qt.ItemDataRole.UserRole + 1, 0)
             item.setSizeHint(QSize(320, 50))
             self.cluster_list.addItem(item)
-            self.cluster_list.setItemWidget(item, self._build_delete_cluster_row_widget())
+            self.cluster_list.setItemWidget(item, self._build_delete_cluster_row_widget(delete_count))
             row_offset = 1
 
         cursor = self.db.conn.cursor()
@@ -1494,7 +1619,15 @@ class ClustreeWindow(QMainWindow):
         assigned_name = (cluster["assigned_name"] or "").strip()
         return assigned_name if assigned_name else f"Event {cluster['id']}"
 
-    def _build_delete_cluster_row_widget(self):
+    def _delete_pending_count(self):
+        cursor = self.db.conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) AS file_count FROM files WHERE status = 'delete_pending'"
+        )
+        row = cursor.fetchone()
+        return row["file_count"] if row else 0
+
+    def _build_delete_cluster_row_widget(self, file_count):
         widget = QWidget()
         widget.setObjectName("clusterRow")
 
@@ -1505,7 +1638,7 @@ class ClustreeWindow(QMainWindow):
         name_label = QLabel("Name: DELETE")
         name_label.setObjectName("clusterName")
 
-        count_label = QLabel("Permanent delete target | empty")
+        count_label = QLabel(f"Delete holding area | {file_count} file(s)")
         count_label.setObjectName("clusterCount")
 
         outer.addWidget(name_label)
@@ -1649,11 +1782,33 @@ class ClustreeWindow(QMainWindow):
         self.thumbnail_grid.clear()
         self.current_cluster_id = DELETE_CLUSTER_ID
         self._select_cluster_list_item(DELETE_CLUSTER_ID)
-        self.grid_header.setText("<b>DELETE cluster (empty)</b>")
+        cursor = self.db.conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, original_path, file_size
+            FROM files
+            WHERE status = 'delete_pending'
+            ORDER BY computed_date ASC, id ASC
+            """
+        )
+        files = cursor.fetchall()
+
+        self.grid_header.setText(f"<b>DELETE cluster ({len(files)} files)</b>")
         self.rename_input.clear()
         self.rename_input.setEnabled(False)
         self.save_name_btn.setEnabled(False)
         self.progress_bar.hide()
+        if files:
+            self.progress_bar.setMaximum(len(files))
+            self.progress_bar.setValue(0)
+            self.progress_bar.show()
+
+            self.thumb_worker = ThumbnailWorker(files, thumbnail_size=self.settings.thumbnail_size)
+            self.thumb_worker.thumb_ready.connect(self.add_thumbnail)
+            self.thumb_worker.progress.connect(self.progress_bar.setValue)
+            self.thumb_worker.finished.connect(self.progress_bar.hide)
+            self.thumb_worker.start()
+
         self.update_status("Viewing DELETE cluster")
 
     def load_cluster_by_id(self, cluster_id):
@@ -1679,7 +1834,7 @@ class ClustreeWindow(QMainWindow):
             SELECT id, original_path, file_size
             FROM files
             WHERE cluster_id = ?
-              AND status != 'archived'
+              AND status NOT IN ('archived', 'delete_pending')
             ORDER BY computed_date ASC, id ASC
             """,
             (self.current_cluster_id,),
@@ -1749,6 +1904,7 @@ class ClustreeWindow(QMainWindow):
                 "path": file_path,
                 "name": file_name,
                 "size": file_size,
+                "cluster_id": self.current_cluster_id,
             },
         )
 
@@ -1791,6 +1947,7 @@ class ClustreeWindow(QMainWindow):
             return
 
         if item.data(Qt.ItemDataRole.UserRole) == DELETE_CLUSTER_ID:
+            self.show_delete_cluster_context_menu(pos)
             return
 
         if not item.isSelected():
@@ -1842,6 +1999,21 @@ class ClustreeWindow(QMainWindow):
                 return
             self.merge_clusters([selected_ids[0], neighbor_ids["next"]])
             return
+
+    def show_delete_cluster_context_menu(self, pos):
+        if not self.settings.show_delete_cluster:
+            return
+
+        menu = QMenu(self)
+        return_action = menu.addAction("Return all from DELETE")
+        delete_action = menu.addAction("Permanently delete all in DELETE...")
+
+        action = menu.exec_(self.cluster_list.mapToGlobal(pos))
+
+        if action == return_action:
+            self.return_files_from_delete_cluster()
+        elif action == delete_action:
+            self.permanently_delete_delete_cluster_files()
 
     def rename_cluster_from_menu(self, cluster_id):
         cursor = self.db.conn.cursor()
@@ -1953,7 +2125,7 @@ class ClustreeWindow(QMainWindow):
                 UPDATE files
                 SET cluster_id = ?
                 WHERE cluster_id IN ({placeholders})
-                  AND status != 'archived'
+                  AND status NOT IN ('archived', 'delete_pending')
                 """,
                 [target_cluster_id] + source_cluster_ids,
             )
@@ -2043,12 +2215,24 @@ class ClustreeWindow(QMainWindow):
 
         menu = QMenu(self)
 
-        delete_action = None
-        if self.settings.show_delete_cluster:
-            delete_action = menu.addAction(f"DELETE selected permanently ({len(selected_file_ids)})")
+        if self.current_cluster_id == DELETE_CLUSTER_ID:
+            return_action = menu.addAction(f"Return selected from DELETE ({len(selected_file_ids)})")
+            delete_action = menu.addAction(f"Permanently delete selected ({len(selected_file_ids)})")
             font = delete_action.font()
             font.setBold(True)
             delete_action.setFont(font)
+
+            action = menu.exec_(self.thumbnail_grid.mapToGlobal(pos))
+
+            if action == return_action:
+                self.return_files_from_delete_cluster(selected_file_ids)
+            elif action == delete_action:
+                self.permanently_delete_delete_cluster_files(selected_file_ids)
+            return
+
+        move_to_delete_action = None
+        if self.settings.show_delete_cluster:
+            move_to_delete_action = menu.addAction(f"Move selected to DELETE ({len(selected_file_ids)})")
             menu.addSeparator()
 
         new_temp_cluster_action = menu.addAction(f"Move selected to new temp cluster ({len(selected_file_ids)})")
@@ -2071,8 +2255,8 @@ class ClustreeWindow(QMainWindow):
 
         action = menu.exec_(self.thumbnail_grid.mapToGlobal(pos))
 
-        if delete_action and action == delete_action:
-            self.permanently_delete_selected_files(selected_file_ids)
+        if move_to_delete_action and action == move_to_delete_action:
+            self.move_selected_thumbnails_to_delete_cluster(selected_file_ids)
         elif action == new_temp_cluster_action:
             self.move_selected_thumbnails_to_temp_cluster(selected_file_ids)
         elif action in existing_cluster_actions:
@@ -2154,7 +2338,7 @@ class ClustreeWindow(QMainWindow):
             FROM files
             WHERE cluster_id = ?
               AND id IN ({placeholders})
-              AND status != 'archived'
+              AND status NOT IN ('archived', 'delete_pending')
             ORDER BY computed_date ASC, id ASC
             """,
             [self.current_cluster_id] + file_ids,
@@ -2162,22 +2346,81 @@ class ClustreeWindow(QMainWindow):
         return cursor.fetchall()
 
     def _selected_file_paths_in_current_cluster(self, cursor, file_ids):
-        if not self.current_cluster_id or not file_ids or self.current_cluster_id == DELETE_CLUSTER_ID:
+        if not self.current_cluster_id or not file_ids:
             return []
 
         placeholders = ",".join("?" for _ in file_ids)
+        if self.current_cluster_id == DELETE_CLUSTER_ID:
+            cursor.execute(
+                f"""
+                SELECT id, original_path
+                FROM files
+                WHERE status = 'delete_pending'
+                  AND id IN ({placeholders})
+                ORDER BY computed_date ASC, id ASC
+                """,
+                file_ids,
+            )
+            return cursor.fetchall()
+
         cursor.execute(
             f"""
             SELECT id, original_path
             FROM files
             WHERE cluster_id = ?
               AND id IN ({placeholders})
-              AND status != 'archived'
+              AND status NOT IN ('archived', 'delete_pending')
             ORDER BY computed_date ASC, id ASC
             """,
             [self.current_cluster_id] + file_ids,
         )
         return cursor.fetchall()
+
+    def move_selected_thumbnails_to_delete_cluster(self, file_ids):
+        if not self.current_cluster_id or not file_ids or self.current_cluster_id == DELETE_CLUSTER_ID:
+            return
+
+        cursor = self.db.conn.cursor()
+        selected_files = self._selected_file_paths_in_current_cluster(cursor, file_ids)
+        if not selected_files:
+            return
+
+        selected_ids = [row["id"] for row in selected_files]
+        placeholders = ",".join("?" for _ in selected_ids)
+        source_cluster_id = self.current_cluster_id
+
+        try:
+            cursor.execute(
+                f"""
+                UPDATE files
+                SET cluster_id = ?,
+                    delete_origin_cluster_id = ?,
+                    status = 'delete_pending'
+                WHERE id IN ({placeholders})
+                """,
+                [DELETE_CLUSTER_ID, source_cluster_id] + selected_ids,
+            )
+            self._recalculate_cluster_dates_and_count(cursor, source_cluster_id)
+            self.db.conn.commit()
+
+            self.invalidate_plan()
+            self.load_clusters()
+            cursor.execute("SELECT file_count FROM clusters WHERE id = ?", (source_cluster_id,))
+            source_cluster = cursor.fetchone()
+            if source_cluster and source_cluster["file_count"] > 0:
+                self.load_cluster_by_id(source_cluster_id)
+            else:
+                self.load_delete_cluster()
+
+            self.update_status(f"Moved {len(selected_ids)} file(s) to DELETE")
+
+        except Exception as e:
+            self.db.conn.rollback()
+            QMessageBox.critical(
+                self,
+                "Move to DELETE Failed",
+                f"Could not move files to DELETE:\n{str(e)}",
+            )
 
     def _delete_files_from_source_and_database(self, cursor, file_rows):
         result = {
@@ -2212,18 +2455,40 @@ class ClustreeWindow(QMainWindow):
 
         return result
 
-    def permanently_delete_selected_files(self, file_ids):
-        if not self.current_cluster_id or not file_ids or self.current_cluster_id == DELETE_CLUSTER_ID:
-            return
+    def _delete_pending_file_rows(self, cursor, file_ids=None):
+        if file_ids:
+            placeholders = ",".join("?" for _ in file_ids)
+            cursor.execute(
+                f"""
+                SELECT id, original_path
+                FROM files
+                WHERE status = 'delete_pending'
+                  AND id IN ({placeholders})
+                ORDER BY computed_date ASC, id ASC
+                """,
+                file_ids,
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT id, original_path
+                FROM files
+                WHERE status = 'delete_pending'
+                ORDER BY computed_date ASC, id ASC
+                """
+            )
 
+        return cursor.fetchall()
+
+    def permanently_delete_delete_cluster_files(self, file_ids=None):
         cursor = self.db.conn.cursor()
-        selected_files = self._selected_file_paths_in_current_cluster(cursor, file_ids)
+        selected_files = self._delete_pending_file_rows(cursor, file_ids)
 
         if not selected_files:
             QMessageBox.warning(
                 self,
                 "DELETE Failed",
-                "No selected files are still part of the current cluster.",
+                "No files are currently in the DELETE cluster.",
             )
             return
 
@@ -2244,11 +2509,8 @@ class ClustreeWindow(QMainWindow):
         if reply != QMessageBox.Yes:
             return
 
-        source_cluster_id = self.current_cluster_id
-
         try:
             result = self._delete_files_from_source_and_database(cursor, selected_files)
-            self._recalculate_cluster_dates_and_count(cursor, source_cluster_id)
             self.db.conn.commit()
 
             self.invalidate_plan()
@@ -2258,19 +2520,7 @@ class ClustreeWindow(QMainWindow):
             missing_count = len(result["missing"])
             failed_count = len(result["failed"])
 
-            cursor.execute(
-                "SELECT file_count FROM clusters WHERE id = ?",
-                (source_cluster_id,),
-            )
-            cluster = cursor.fetchone()
-            if cluster and cluster["file_count"] > 0:
-                self.load_cluster_by_id(source_cluster_id)
-            else:
-                self.thumbnail_grid.clear()
-                self.rename_input.clear()
-                self.rename_input.setEnabled(False)
-                self.save_name_btn.setEnabled(False)
-                self.current_cluster_id = None
+            self.load_delete_cluster()
 
             self.update_status(
                 f"DELETE complete: {deleted_count} deleted, {missing_count} missing removed, {failed_count} failed"
@@ -2290,6 +2540,85 @@ class ClustreeWindow(QMainWindow):
                 self,
                 "DELETE Failed",
                 f"Could not complete DELETE:\n{str(e)}",
+            )
+
+    def return_files_from_delete_cluster(self, file_ids=None):
+        cursor = self.db.conn.cursor()
+
+        if file_ids:
+            placeholders = ",".join("?" for _ in file_ids)
+            cursor.execute(
+                f"""
+                SELECT id, delete_origin_cluster_id
+                FROM files
+                WHERE status = 'delete_pending'
+                  AND id IN ({placeholders})
+                ORDER BY computed_date ASC, id ASC
+                """,
+                file_ids,
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT id, delete_origin_cluster_id
+                FROM files
+                WHERE status = 'delete_pending'
+                ORDER BY computed_date ASC, id ASC
+                """
+            )
+
+        rows = cursor.fetchall()
+        if not rows:
+            QMessageBox.information(self, "Return from DELETE", "No files are currently in the DELETE cluster.")
+            return
+
+        restored = 0
+        left = 0
+        touched_clusters = set()
+
+        try:
+            for row in rows:
+                origin_cluster_id = row["delete_origin_cluster_id"]
+                if origin_cluster_id is None:
+                    left += 1
+                    continue
+
+                cursor.execute(
+                    "SELECT id FROM clusters WHERE id = ? AND status = 'pending'",
+                    (origin_cluster_id,),
+                )
+                if not cursor.fetchone():
+                    left += 1
+                    continue
+
+                cursor.execute(
+                    """
+                    UPDATE files
+                    SET cluster_id = ?,
+                        delete_origin_cluster_id = NULL,
+                        status = 'pending'
+                    WHERE id = ?
+                    """,
+                    (origin_cluster_id, row["id"]),
+                )
+                touched_clusters.add(origin_cluster_id)
+                restored += 1
+
+            for cluster_id in touched_clusters:
+                self._recalculate_cluster_dates_and_count(cursor, cluster_id)
+
+            self.db.conn.commit()
+            self.invalidate_plan()
+            self.load_clusters()
+            self.load_delete_cluster()
+            self.update_status(f"Returned {restored} file(s) from DELETE; {left} left in DELETE")
+
+        except Exception as e:
+            self.db.conn.rollback()
+            QMessageBox.critical(
+                self,
+                "Return Failed",
+                f"Could not return files from DELETE:\n{str(e)}",
             )
 
     def _next_manual_cluster_color(self):
@@ -2431,7 +2760,7 @@ class ClustreeWindow(QMainWindow):
             SELECT id, computed_date
             FROM files
             WHERE cluster_id = ?
-              AND status != 'archived'
+              AND status NOT IN ('archived', 'delete_pending')
             ORDER BY computed_date ASC, id ASC
             """,
             (self.current_cluster_id,),
@@ -2531,7 +2860,7 @@ class ClustreeWindow(QMainWindow):
                 SELECT COUNT(id)
                 FROM files
                 WHERE files.cluster_id = clusters.id
-                  AND files.status != 'archived'
+                  AND files.status NOT IN ('archived', 'delete_pending')
             )
             """
         )
@@ -2539,18 +2868,28 @@ class ClustreeWindow(QMainWindow):
     def _recalculate_cluster_dates_and_count(self, cursor, cluster_id):
         cursor.execute(
             """
+            SELECT COUNT(id) AS file_count
+            FROM files
+            WHERE cluster_id = ?
+              AND status NOT IN ('archived', 'delete_pending')
+            """,
+            (cluster_id,),
+        )
+        count_row = cursor.fetchone()
+        count = count_row["file_count"] if count_row else 0
+
+        cursor.execute(
+            """
             SELECT computed_date
             FROM files
             WHERE cluster_id = ?
-              AND status != 'archived'
+              AND status NOT IN ('archived', 'delete_pending')
               AND computed_date IS NOT NULL
             ORDER BY computed_date ASC, id ASC
             """,
             (cluster_id,),
         )
         rows = cursor.fetchall()
-
-        count = len(rows)
 
         if count == 0:
             cursor.execute(
@@ -2562,6 +2901,19 @@ class ClustreeWindow(QMainWindow):
                 WHERE id = ?
                 """,
                 (cluster_id,),
+            )
+            return
+
+        if not rows:
+            cursor.execute(
+                """
+                UPDATE clusters
+                SET start_date = NULL,
+                    end_date = NULL,
+                    file_count = ?
+                WHERE id = ?
+                """,
+                (count, cluster_id),
             )
             return
 
@@ -2830,7 +3182,7 @@ class ClustreeWindow(QMainWindow):
                 SELECT id, original_path, exif_date, regex_date, os_date, computed_date
                 FROM files
                 WHERE cluster_id = ?
-                  AND status != 'archived'
+                  AND status NOT IN ('archived', 'delete_pending')
                 ORDER BY computed_date ASC, id ASC
                 """,
                 (cluster_id,),

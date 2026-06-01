@@ -30,7 +30,9 @@ Implemented now:
 - Optional filename and smart file-size labels under thumbnails.
 - Configurable rename pattern.
 - Configurable staging/output root for manual promotion into a stable photo pool.
-- Optional virtual `DELETE` cluster for confirmed permanent source-file removal.
+- Optional bottom log pane with copy and clear actions.
+- Draggable splitters between cluster/thumb/log panes.
+- Optional virtual `DELETE` holding cluster for confirmed permanent source-file removal.
 - Settings `CLEANUP` button to wipe local caches and the current Clustree database.
 - GUI phase messages during scan/date/cluster ingestion.
 - GUI ingestion progress counts for scanning, date extraction, and clustering.
@@ -168,6 +170,7 @@ Current settings:
 - rename pattern
 - staging/output root
 - show DELETE cluster
+- show log pane
 
 Cluster gap presets:
 
@@ -259,10 +262,11 @@ keep adding more shots to that subject later, use `Move selected to existing
 cluster` from the same menu.
 
 When `Show DELETE cluster` is enabled, the sidebar shows a virtual `DELETE`
-row at the top and thumbnail context menus include a top DELETE action. DELETE
-asks for confirmation, removes selected source files from disk, and deletes
-their rows from the local database. Drag-and-drop onto the DELETE row is ignored
-so permanent deletion stays an explicit menu action.
+row at the top. Thumbnail context menus and drag-and-drop can move selected
+files into that holding area without touching source files. Right-click inside
+the DELETE thumbnail view to return selected files to their original clusters or
+permanently delete them. Right-click the DELETE row to return or permanently
+delete everything in the holding area.
 
 Unnamed clusters display as `Name: Event n` in the sidebar only. That fallback
 does not count as a saved event name, so unnamed clusters are still excluded

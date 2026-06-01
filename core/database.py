@@ -39,6 +39,7 @@ class ClustreeDB:
                 computed_date TEXT,
                 is_duplicate BOOLEAN DEFAULT 0,
                 cluster_id INTEGER,
+                delete_origin_cluster_id INTEGER,
                 status TEXT DEFAULT 'pending' 
             )
         ''')
@@ -64,6 +65,13 @@ class ClustreeDB:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_files_computed_date ON files(computed_date)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_files_status_duplicate_date ON files(status, is_duplicate, computed_date)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_clusters_status_date ON clusters(status, start_date)")
+
+        existing_file_columns = {
+            row["name"] for row in cursor.execute("PRAGMA table_info(files)").fetchall()
+        }
+        if "delete_origin_cluster_id" not in existing_file_columns:
+            cursor.execute("ALTER TABLE files ADD COLUMN delete_origin_cluster_id INTEGER")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_files_delete_origin ON files(delete_origin_cluster_id)")
 
         existing_cluster_columns = {
             row["name"] for row in cursor.execute("PRAGMA table_info(clusters)").fetchall()

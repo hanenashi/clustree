@@ -35,6 +35,7 @@ class AppSettings:
     rename_pattern: str = DEFAULT_RENAME_PATTERN
     output_root: str = DEFAULT_OUTPUT_ROOT
     show_delete_cluster: bool = False
+    show_log_pane: bool = True
 
     def normalize(self):
         """Keeps settings sane after loading older or hand-edited JSON."""
@@ -72,6 +73,7 @@ class AppSettings:
 
         self.show_thumbnail_file_info = bool(self.show_thumbnail_file_info)
         self.show_delete_cluster = bool(self.show_delete_cluster)
+        self.show_log_pane = bool(self.show_log_pane)
         self.output_root = str(self.output_root or "").strip()
 
         return self
