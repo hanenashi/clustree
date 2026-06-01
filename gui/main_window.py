@@ -706,9 +706,13 @@ class ClusterListWidget(QListWidget):
         if not self._drop_target_item:
             return
 
-        self._drop_target_item.setBackground(QBrush())
-        self._drop_target_item.setForeground(QBrush())
-        self._drop_target_item = None
+        try:
+            self._drop_target_item.setBackground(QBrush())
+            self._drop_target_item.setForeground(QBrush())
+        except RuntimeError:
+            pass
+        finally:
+            self._drop_target_item = None
 
     def dragEnterEvent(self, event):
         if event.source() and event.source() != self:
@@ -1442,6 +1446,7 @@ class ClustreeWindow(QMainWindow):
         self.update_status("Scan complete")
 
     def load_clusters(self):
+        self.cluster_list._clear_drop_target_item()
         self.cluster_list.clear()
 
         row_offset = 0
