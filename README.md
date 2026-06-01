@@ -298,6 +298,16 @@ run.sh                  Unix/macOS/Termux launcher
 
 Next useful chunks:
 
+- Abuse-test DELETE, undo, duplicate cleanup, and run-plan behavior on copied
+  real folders before trusting it with the stable photo pool.
+- Improve video handling: clearer video cards/placeholders and better Windows
+  `ffmpeg` discovery or bundling guidance.
+- Add more move-plan confidence checks for mixed-date temp clusters, DELETE
+  pending files, stale paths, missing sidecars, and risky output roots.
+- Turn current smoke coverage into small repeatable fixtures for scan, cluster,
+  temp cluster, DELETE holding, preview, run, and undo flows.
+- Polish the import workflow with saved/recent folders and clearer staging-only
+  ergonomics for chaos-soup imports.
 - Real-world polish after a larger import dry run.
 
 ---
