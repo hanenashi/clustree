@@ -33,7 +33,7 @@ Implemented now:
 - GUI ingestion progress counts for scanning, date extraction, and clustering.
 - PyQt thumbnail triage UI.
 - Readable cluster list with date-right rows, dividers, and alternating backgrounds.
-- Session-colored manual temp clusters.
+- Manual temp clusters sorted first, date-hidden, and color-swatched in the cluster list and move menu.
 - Thumbnail cache in `.clustree_cache/thumbs/`.
 - EXIF orientation-aware image thumbnails.
 - Optional video thumbnails via `ffmpeg`.

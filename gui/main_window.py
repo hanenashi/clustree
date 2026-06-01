@@ -1316,14 +1316,20 @@ class ClustreeWindow(QMainWindow):
         cursor = self.db.conn.cursor()
         cursor.execute(
             """
-            SELECT id, start_date, file_count, assigned_name
+            SELECT id, start_date, file_count, assigned_name, manual_kind
             FROM clusters
             WHERE status != 'archived'
               AND file_count > 0
-            ORDER BY start_date ASC, id ASC
+            ORDER BY
+              CASE WHEN manual_kind = 'temp' THEN 0 ELSE 1 END,
+              CASE WHEN manual_kind = 'temp' THEN id END ASC,
+              start_date ASC,
+              id ASC
             """
         )
         clusters = cursor.fetchall()
+
+        self._sync_manual_cluster_colors(clusters)
 
         for row_index, cluster in enumerate(clusters):
             item = QListWidgetItem()
@@ -1341,6 +1347,28 @@ class ClustreeWindow(QMainWindow):
     def _cluster_display_name(self, cluster):
         assigned_name = (cluster["assigned_name"] or "").strip()
         return assigned_name if assigned_name else f"Event {cluster['id']}"
+
+    def _is_manual_cluster(self, cluster):
+        try:
+            return cluster["manual_kind"] == "temp"
+        except (KeyError, IndexError):
+            return cluster["id"] in self.manual_cluster_colors
+
+    def _sync_manual_cluster_colors(self, clusters):
+        active_manual_ids = []
+
+        for cluster in clusters:
+            if not self._is_manual_cluster(cluster):
+                continue
+
+            cluster_id = cluster["id"]
+            active_manual_ids.append(cluster_id)
+            if cluster_id not in self.manual_cluster_colors:
+                self.manual_cluster_colors[cluster_id] = self._next_manual_cluster_color()
+
+        for cluster_id in list(self.manual_cluster_colors):
+            if cluster_id not in active_manual_ids:
+                self.manual_cluster_colors.pop(cluster_id, None)
 
     def _cluster_row_background(self, cluster_id, row_index):
         if cluster_id in self.manual_cluster_colors:
@@ -1362,14 +1390,18 @@ class ClustreeWindow(QMainWindow):
         name_label = QLabel(f"Name: {self._cluster_display_name(cluster)}")
         name_label.setObjectName("clusterName")
 
-        date_label = QLabel(cluster["start_date"].split(" ")[0] if cluster["start_date"] else "unknown-date")
+        date_text = "" if self._is_manual_cluster(cluster) else (
+            cluster["start_date"].split(" ")[0] if cluster["start_date"] else "unknown-date"
+        )
+        date_label = QLabel(date_text)
         date_label.setObjectName("clusterDate")
         date_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         top_line.addWidget(name_label, 1)
         top_line.addWidget(date_label, 0)
 
-        count_label = QLabel(f"Event {cluster['id']} | {cluster['file_count']} file(s)")
+        cluster_kind = "Manual temp" if self._is_manual_cluster(cluster) else f"Event {cluster['id']}"
+        count_label = QLabel(f"{cluster_kind} | {cluster['file_count']} file(s)")
         count_label.setObjectName("clusterCount")
 
         outer.addLayout(top_line)
@@ -1798,6 +1830,11 @@ class ClustreeWindow(QMainWindow):
             existing_menu = menu.addMenu("Move selected to existing cluster")
             for cluster in candidate_clusters:
                 action = existing_menu.addAction(self._cluster_menu_label(cluster))
+                if self._is_manual_cluster(cluster):
+                    action.setIcon(self._cluster_color_icon(cluster))
+                    font = action.font()
+                    font.setBold(True)
+                    action.setFont(font)
                 existing_cluster_actions[action] = cluster["id"]
 
         menu.addSeparator()
@@ -1836,12 +1873,14 @@ class ClustreeWindow(QMainWindow):
         cursor = self.db.conn.cursor()
         cursor.execute(
             """
-            SELECT id, start_date, file_count, assigned_name
+            SELECT id, start_date, file_count, assigned_name, manual_kind
             FROM clusters
             WHERE status != 'archived'
               AND file_count > 0
               AND id != ?
             ORDER BY
+              CASE WHEN manual_kind = 'temp' THEN 0 ELSE 1 END,
+              CASE WHEN manual_kind = 'temp' THEN id END ASC,
               CASE WHEN assigned_name IS NULL OR TRIM(assigned_name) = '' THEN 0 ELSE 1 END,
               start_date ASC,
               id ASC
@@ -1851,9 +1890,28 @@ class ClustreeWindow(QMainWindow):
         return cursor.fetchall()
 
     def _cluster_menu_label(self, cluster):
-        date_label = cluster["start_date"].split(" ")[0] if cluster["start_date"] else "unknown-date"
         name_label = self._cluster_display_name(cluster)
+        if self._is_manual_cluster(cluster):
+            return f"Manual temp {cluster['id']} ({cluster['file_count']} files) - {name_label}"
+
+        date_label = cluster["start_date"].split(" ")[0] if cluster["start_date"] else "unknown-date"
         return f"Event {cluster['id']} ({date_label}, {cluster['file_count']} files) - {name_label}"
+
+    def _cluster_color_icon(self, cluster):
+        cluster_id = cluster["id"]
+        color = self.manual_cluster_colors.get(cluster_id)
+        if not color:
+            return QIcon()
+
+        pixmap = QPixmap(14, 14)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(QColor(color))
+        painter.setPen(QColor("#7aa874"))
+        painter.drawRoundedRect(1, 1, 12, 12, 3, 3)
+        painter.end()
+        return QIcon(pixmap)
 
     def _selected_files_in_current_cluster(self, cursor, file_ids):
         if not self.current_cluster_id or not file_ids:
@@ -1902,8 +1960,8 @@ class ClustreeWindow(QMainWindow):
         try:
             cursor.execute(
                 """
-                INSERT INTO clusters (start_date, end_date, file_count, assigned_name, status)
-                VALUES (?, ?, ?, ?, 'pending')
+                INSERT INTO clusters (start_date, end_date, file_count, assigned_name, manual_kind, status)
+                VALUES (?, ?, ?, ?, 'temp', 'pending')
                 """,
                 (start_date, end_date, len(selected_ids), None),
             )

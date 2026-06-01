@@ -51,6 +51,7 @@ class ClustreeDB:
                 end_date TEXT,
                 file_count INTEGER,
                 assigned_name TEXT,
+                manual_kind TEXT,
                 status TEXT DEFAULT 'pending'
             )
         ''')
@@ -63,6 +64,13 @@ class ClustreeDB:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_files_computed_date ON files(computed_date)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_files_status_duplicate_date ON files(status, is_duplicate, computed_date)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_clusters_status_date ON clusters(status, start_date)")
+
+        existing_cluster_columns = {
+            row["name"] for row in cursor.execute("PRAGMA table_info(clusters)").fetchall()
+        }
+        if "manual_kind" not in existing_cluster_columns:
+            cursor.execute("ALTER TABLE clusters ADD COLUMN manual_kind TEXT")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_clusters_manual_kind ON clusters(manual_kind)")
         
         self.conn.commit()
         logger.info("Database schema initialized.")
