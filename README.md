@@ -32,6 +32,8 @@ Implemented now:
 - GUI phase messages during scan/date/cluster ingestion.
 - GUI ingestion progress counts for scanning, date extraction, and clustering.
 - PyQt thumbnail triage UI.
+- Readable cluster list with date-right rows, dividers, and alternating backgrounds.
+- Session-colored manual temp clusters.
 - Thumbnail cache in `.clustree_cache/thumbs/`.
 - EXIF orientation-aware image thumbnails.
 - Optional video thumbnails via `ffmpeg`.
@@ -43,6 +45,7 @@ Implemented now:
   - move selected to a new temp manual cluster for date-independent repeated subjects
   - move selected into an existing manual cluster
 - Right-click cluster-list merge:
+  - rename cluster
   - merge selected clusters
   - merge with previous cluster
   - merge with next cluster
@@ -239,6 +242,10 @@ thumbnail context menu. Clustree creates a normal pending cluster from that
 manual selection; name it like any other event before previewing/exporting. To
 keep adding more shots to that subject later, use `Move selected to existing
 cluster` from the same menu.
+
+Unnamed clusters display as `Name: Event n` in the sidebar only. That fallback
+does not count as a saved event name, so unnamed clusters are still excluded
+from Preview/Run until you save or rename them explicitly.
 
 ---
 

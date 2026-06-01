@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
     QLineEdit, QPushButton, QMessageBox, QFileDialog,
     QDialog, QFormLayout, QComboBox, QSpinBox, QDialogButtonBox,
     QPlainTextEdit, QMenu, QTableWidget, QTableWidgetItem,
-    QHeaderView, QAbstractItemView
+    QHeaderView, QAbstractItemView, QInputDialog
 )
 
 # Silence the High Sierra SIP deprecation warning
@@ -42,6 +42,13 @@ from core.cluster import ClusterEngine
 IMAGE_THUMBNAIL_EXTENSIONS = (".jpg", ".jpeg", ".png")
 VIDEO_THUMBNAIL_EXTENSIONS = (".mp4", ".mov", ".avi")
 THUMBNAIL_CACHE_VERSION = "thumb-v2-exif-transpose"
+MANUAL_CLUSTER_COLORS = (
+    "#e3f6df",
+    "#dff4ec",
+    "#e9f6d8",
+    "#dcefd6",
+    "#e5f7e9",
+)
 
 
 class SettingsDialog(QDialog):
@@ -740,6 +747,8 @@ class ClustreeWindow(QMainWindow):
         self.db = db
         self.settings = load_settings()
         self.current_move_plan = None
+        self.manual_cluster_colors = {}
+        self.manual_cluster_color_index = 0
 
         self.setWindowTitle(f"Clustree {APP_VERSION} - Triage")
         self.resize(1200, 800)
@@ -775,6 +784,7 @@ class ClustreeWindow(QMainWindow):
         self.cluster_list.file_reassigned.connect(self.handle_file_reassigned)
         self.cluster_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.cluster_list.customContextMenuRequested.connect(self.show_cluster_context_menu)
+        self.cluster_list.itemSelectionChanged.connect(self.refresh_cluster_list_styles)
 
         left_panel.addWidget(self.cluster_list)
         main_layout.addLayout(left_panel)
@@ -1315,16 +1325,112 @@ class ClustreeWindow(QMainWindow):
         )
         clusters = cursor.fetchall()
 
-        for cluster in clusters:
-            cid = cluster["id"]
-            date = cluster["start_date"].split(" ")[0] if cluster["start_date"] else "unknown-date"
-            count = cluster["file_count"]
-            name = (cluster["assigned_name"] or "").strip()
-            name_line = f"Name: {name}" if name else "Name: (unnamed)"
-
-            item = QListWidgetItem(f"Event {cid} ({date})\n[{count} files] | {name_line}")
-            item.setData(Qt.ItemDataRole.UserRole, cid)
+        for row_index, cluster in enumerate(clusters):
+            item = QListWidgetItem()
+            item.setData(Qt.ItemDataRole.UserRole, cluster["id"])
+            item.setData(Qt.ItemDataRole.UserRole + 1, row_index)
+            item.setSizeHint(QSize(320, 58))
             self.cluster_list.addItem(item)
+            self.cluster_list.setItemWidget(item, self._build_cluster_row_widget(cluster, row_index))
+
+        if self.current_cluster_id:
+            self._select_cluster_list_item(self.current_cluster_id)
+        else:
+            self.refresh_cluster_list_styles()
+
+    def _cluster_display_name(self, cluster):
+        assigned_name = (cluster["assigned_name"] or "").strip()
+        return assigned_name if assigned_name else f"Event {cluster['id']}"
+
+    def _cluster_row_background(self, cluster_id, row_index):
+        if cluster_id in self.manual_cluster_colors:
+            return self.manual_cluster_colors[cluster_id]
+
+        return "#ffffff" if row_index % 2 == 0 else "#f3f3f3"
+
+    def _build_cluster_row_widget(self, cluster, row_index):
+        widget = QWidget()
+        widget.setObjectName("clusterRow")
+
+        outer = QVBoxLayout(widget)
+        outer.setContentsMargins(8, 5, 8, 5)
+        outer.setSpacing(2)
+
+        top_line = QHBoxLayout()
+        top_line.setContentsMargins(0, 0, 0, 0)
+
+        name_label = QLabel(f"Name: {self._cluster_display_name(cluster)}")
+        name_label.setObjectName("clusterName")
+
+        date_label = QLabel(cluster["start_date"].split(" ")[0] if cluster["start_date"] else "unknown-date")
+        date_label.setObjectName("clusterDate")
+        date_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        top_line.addWidget(name_label, 1)
+        top_line.addWidget(date_label, 0)
+
+        count_label = QLabel(f"Event {cluster['id']} | {cluster['file_count']} file(s)")
+        count_label.setObjectName("clusterCount")
+
+        outer.addLayout(top_line)
+        outer.addWidget(count_label)
+
+        self._apply_cluster_row_style(widget, cluster["id"], row_index, selected=False)
+        return widget
+
+    def _apply_cluster_row_style(self, widget, cluster_id, row_index, selected=False):
+        background = self._cluster_row_background(cluster_id, row_index)
+        border_left = "#3178c6" if selected else "transparent"
+        border_left_width = "4px" if selected else "4px"
+
+        widget.setStyleSheet(
+            f"""
+            QWidget#clusterRow {{
+                background: {background};
+                border-bottom: 1px solid #d7d7d7;
+                border-left: {border_left_width} solid {border_left};
+            }}
+            QLabel#clusterName {{
+                color: #111111;
+                font-weight: 600;
+            }}
+            QLabel#clusterDate {{
+                color: #4b5563;
+                font-size: 11px;
+            }}
+            QLabel#clusterCount {{
+                color: #4b5563;
+                font-size: 11px;
+            }}
+            """
+        )
+
+    def refresh_cluster_list_styles(self):
+        for row in range(self.cluster_list.count()):
+            item = self.cluster_list.item(row)
+            widget = self.cluster_list.itemWidget(item)
+            if not widget:
+                continue
+
+            cluster_id = item.data(Qt.ItemDataRole.UserRole)
+            row_index = item.data(Qt.ItemDataRole.UserRole + 1)
+            self._apply_cluster_row_style(
+                widget,
+                cluster_id,
+                row_index if row_index is not None else row,
+                selected=item.isSelected() or cluster_id == self.current_cluster_id,
+            )
+
+    def _select_cluster_list_item(self, cluster_id):
+        for row in range(self.cluster_list.count()):
+            item = self.cluster_list.item(row)
+            if item.data(Qt.ItemDataRole.UserRole) == cluster_id:
+                self.cluster_list.setCurrentItem(item)
+                item.setSelected(True)
+                self.refresh_cluster_list_styles()
+                return
+
+        self.refresh_cluster_list_styles()
 
     def start_loading_cluster(self, item):
         cluster_id = item.data(Qt.ItemDataRole.UserRole)
@@ -1337,6 +1443,7 @@ class ClustreeWindow(QMainWindow):
 
         self.thumbnail_grid.clear()
         self.current_cluster_id = cluster_id
+        self._select_cluster_list_item(cluster_id)
 
         cursor = self.db.conn.cursor()
 
@@ -1363,6 +1470,9 @@ class ClustreeWindow(QMainWindow):
 
         self.rename_input.setEnabled(True)
         self.save_name_btn.setEnabled(True)
+        self.rename_input.setPlaceholderText(
+            f"Event {cluster_id} (display only; save a real name to include in plan)..."
+        )
         self.rename_input.setText(assigned_name)
         self.rename_input.setFocus()
 
@@ -1446,6 +1556,7 @@ class ClustreeWindow(QMainWindow):
 
         menu = QMenu(self)
 
+        rename_action = None
         merge_selected_action = None
         merge_previous_action = None
         merge_next_action = None
@@ -1453,10 +1564,16 @@ class ClustreeWindow(QMainWindow):
         if len(selected_ids) >= 2:
             merge_selected_action = menu.addAction(f"Merge selected clusters ({len(selected_ids)})")
         else:
+            rename_action = menu.addAction("Rename cluster...")
+            menu.addSeparator()
             merge_previous_action = menu.addAction("Merge with previous cluster")
             merge_next_action = menu.addAction("Merge with next cluster")
 
         action = menu.exec_(self.cluster_list.mapToGlobal(pos))
+
+        if rename_action and action == rename_action:
+            self.rename_cluster_from_menu(selected_ids[0])
+            return
 
         if merge_selected_action and action == merge_selected_action:
             self.merge_clusters(selected_ids)
@@ -1477,6 +1594,37 @@ class ClustreeWindow(QMainWindow):
                 return
             self.merge_clusters([selected_ids[0], neighbor_ids["next"]])
             return
+
+    def rename_cluster_from_menu(self, cluster_id):
+        cursor = self.db.conn.cursor()
+        cursor.execute(
+            "SELECT assigned_name FROM clusters WHERE id = ?",
+            (cluster_id,),
+        )
+        cluster = cursor.fetchone()
+        current_name = (cluster["assigned_name"] or "").strip() if cluster else ""
+
+        new_name, accepted = QInputDialog.getText(
+            self,
+            "Rename Cluster",
+            f"Name for Event {cluster_id}:",
+            text=current_name,
+        )
+
+        if not accepted:
+            return
+
+        new_name = new_name.strip()
+        cursor.execute(
+            "UPDATE clusters SET assigned_name = ? WHERE id = ?",
+            (new_name or None, cluster_id),
+        )
+        self.db.conn.commit()
+
+        self.invalidate_plan()
+        self.load_clusters()
+        self.load_cluster_by_id(cluster_id)
+        self.update_status(f"Renamed Event {cluster_id}")
 
     def _active_cluster_ids_in_order(self):
         """Returns active cluster IDs in sidebar order."""
@@ -1704,8 +1852,7 @@ class ClustreeWindow(QMainWindow):
 
     def _cluster_menu_label(self, cluster):
         date_label = cluster["start_date"].split(" ")[0] if cluster["start_date"] else "unknown-date"
-        name = (cluster["assigned_name"] or "").strip()
-        name_label = name if name else "temp unnamed"
+        name_label = self._cluster_display_name(cluster)
         return f"Event {cluster['id']} ({date_label}, {cluster['file_count']} files) - {name_label}"
 
     def _selected_files_in_current_cluster(self, cursor, file_ids):
@@ -1725,6 +1872,11 @@ class ClustreeWindow(QMainWindow):
             [self.current_cluster_id] + file_ids,
         )
         return cursor.fetchall()
+
+    def _next_manual_cluster_color(self):
+        color = MANUAL_CLUSTER_COLORS[self.manual_cluster_color_index % len(MANUAL_CLUSTER_COLORS)]
+        self.manual_cluster_color_index += 1
+        return color
 
     def move_selected_thumbnails_to_temp_cluster(self, file_ids):
         """Creates a manual cluster from the selected thumbnails, independent of date gaps."""
@@ -1756,6 +1908,7 @@ class ClustreeWindow(QMainWindow):
                 (start_date, end_date, len(selected_ids), None),
             )
             new_cluster_id = cursor.lastrowid
+            self.manual_cluster_colors[new_cluster_id] = self._next_manual_cluster_color()
 
             selected_placeholders = ",".join("?" for _ in selected_ids)
             cursor.execute(
