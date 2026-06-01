@@ -24,6 +24,8 @@ RENAME_PATTERN_OPTIONS = {
 
 DEFAULT_RENAME_PATTERN = "clean_sequence"
 DEFAULT_OUTPUT_ROOT = ""
+THEME_OPTIONS = ("Light", "Dark")
+DEFAULT_THEME = "Light"
 
 
 @dataclass
@@ -36,6 +38,7 @@ class AppSettings:
     output_root: str = DEFAULT_OUTPUT_ROOT
     show_delete_cluster: bool = False
     show_log_pane: bool = True
+    theme: str = DEFAULT_THEME
 
     def normalize(self):
         """Keeps settings sane after loading older or hand-edited JSON."""
@@ -74,6 +77,8 @@ class AppSettings:
         self.show_thumbnail_file_info = bool(self.show_thumbnail_file_info)
         self.show_delete_cluster = bool(self.show_delete_cluster)
         self.show_log_pane = bool(self.show_log_pane)
+        if self.theme not in THEME_OPTIONS:
+            self.theme = DEFAULT_THEME
         self.output_root = str(self.output_root or "").strip()
 
         return self

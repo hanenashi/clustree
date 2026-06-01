@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
     QDialog, QFormLayout, QComboBox, QSpinBox, QDialogButtonBox,
     QPlainTextEdit, QMenu, QTableWidget, QTableWidgetItem,
     QHeaderView, QAbstractItemView, QInputDialog, QCheckBox,
-    QSplitter, QTextEdit, QApplication
+    QSplitter, QTextEdit, QApplication, QSlider
 )
 
 # Silence the High Sierra SIP deprecation warning
@@ -31,6 +31,7 @@ from core.app_config import (
     APP_VERSION,
     CLUSTER_GAP_PRESETS,
     RENAME_PATTERN_OPTIONS,
+    THEME_OPTIONS,
     AppSettings,
     load_settings,
     save_settings,
@@ -70,6 +71,7 @@ class SettingsDialog(QDialog):
             output_root=settings.output_root,
             show_delete_cluster=settings.show_delete_cluster,
             show_log_pane=settings.show_log_pane,
+            theme=settings.theme,
         ).normalize()
 
         layout = QVBoxLayout(self)
@@ -139,6 +141,14 @@ class SettingsDialog(QDialog):
         self.show_log_pane_check.setChecked(self.settings.show_log_pane)
         form.addRow("Log pane:", self.show_log_pane_check)
 
+        self.theme_combo = QComboBox()
+        for theme_name in THEME_OPTIONS:
+            self.theme_combo.addItem(theme_name)
+
+        theme_index = self.theme_combo.findText(self.settings.theme)
+        self.theme_combo.setCurrentIndex(theme_index if theme_index >= 0 else 0)
+        form.addRow("Theme:", self.theme_combo)
+
         layout.addLayout(form)
 
         self.cleanup_btn = QPushButton("CLEANUP")
@@ -174,6 +184,7 @@ class SettingsDialog(QDialog):
             output_root=self.output_root_input.text().strip(),
             show_delete_cluster=self.show_delete_cluster_check.isChecked(),
             show_log_pane=self.show_log_pane_check.isChecked(),
+            theme=self.theme_combo.currentText(),
         ).normalize()
 
     def browse_output_root(self):
@@ -821,6 +832,10 @@ class ClustreeWindow(QMainWindow):
         self.settings_btn.clicked.connect(self.open_settings)
         left_header_layout.addWidget(self.settings_btn)
 
+        self.help_btn = QPushButton("Help")
+        self.help_btn.clicked.connect(self.show_help)
+        left_header_layout.addWidget(self.help_btn)
+
         left_panel.addLayout(left_header_layout)
 
         self.cluster_list = ClusterListWidget()
@@ -851,7 +866,7 @@ class ClustreeWindow(QMainWindow):
         self.thumbnail_grid.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.thumbnail_grid.setSpacing(10)
         self.thumbnail_grid.setWordWrap(True)
-        self.thumbnail_grid.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self.thumbnail_grid.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.thumbnail_grid.setDragEnabled(True)
         self.thumbnail_grid.setAcceptDrops(False)
         self.thumbnail_grid.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
@@ -896,10 +911,25 @@ class ClustreeWindow(QMainWindow):
         plan_layout.addWidget(self.duplicate_review_btn)
         plan_layout.addWidget(self.undo_duplicate_btn)
 
+        thumb_size_layout = QHBoxLayout()
+        thumb_size_layout.addWidget(QLabel("Thumb"))
+        self.thumbnail_size_slider = QSlider(Qt.Orientation.Horizontal)
+        self.thumbnail_size_slider.setRange(64, 512)
+        self.thumbnail_size_slider.setSingleStep(16)
+        self.thumbnail_size_slider.setPageStep(32)
+        self.thumbnail_size_slider.setValue(self.settings.thumbnail_size)
+        self.thumbnail_size_slider.valueChanged.connect(self.on_thumbnail_size_slider_changed)
+        self.thumbnail_size_slider.sliderReleased.connect(self.commit_thumbnail_size_slider)
+        self.thumbnail_size_label = QLabel(f"{self.settings.thumbnail_size}px")
+        self.thumbnail_size_label.setMinimumWidth(48)
+        thumb_size_layout.addWidget(self.thumbnail_size_slider, 1)
+        thumb_size_layout.addWidget(self.thumbnail_size_label)
+
         right_panel.addWidget(self.grid_header)
         right_panel.addLayout(name_layout)
         right_panel.addWidget(self.progress_bar)
         right_panel.addWidget(self.thumbnail_grid)
+        right_panel.addLayout(thumb_size_layout)
         right_panel.addLayout(plan_layout)
 
         self.main_splitter.addWidget(right_panel_widget)
@@ -933,6 +963,7 @@ class ClustreeWindow(QMainWindow):
         root_layout.addWidget(self.vertical_splitter)
 
         self.statusBar()
+        self.apply_theme()
         self._apply_thumbnail_grid_settings()
         self._apply_log_visibility()
         self.update_status()
@@ -951,6 +982,20 @@ class ClustreeWindow(QMainWindow):
             f"Staging: {output_label}"
         )
         self.append_log(message)
+
+    def show_help(self):
+        QMessageBox.information(
+            self,
+            "Clustree Help",
+            "TL;DR\n\n"
+            "1. Scan a messy folder.\n"
+            "2. Review detected event clusters.\n"
+            "3. Drag thumbnails, split clusters, or move repeats into temp clusters.\n"
+            "4. Name only the clusters you want to export.\n"
+            "5. Preview Plan, then Run Plan when the paths look right.\n\n"
+            "DELETE is a holding area when enabled: move thumbs there first, then right-click DELETE to return or permanently delete.\n\n"
+            "GitHub:\nhttps://github.com/hanenashi/clustree",
+        )
 
     def append_log(self, message):
         if not hasattr(self, "log_text") or not message:
@@ -973,6 +1018,57 @@ class ClustreeWindow(QMainWindow):
         if hasattr(self, "log_panel"):
             self.log_panel.setVisible(self.settings.show_log_pane)
 
+    def _is_dark_theme(self):
+        return self.settings.theme == "Dark"
+
+    def apply_theme(self):
+        if self._is_dark_theme():
+            self.setStyleSheet(
+                """
+                QMainWindow, QWidget, QDialog {
+                    background: #1f242b;
+                    color: #e7eaf0;
+                }
+                QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox, QTableWidget, QListWidget {
+                    background: #151a20;
+                    color: #edf0f5;
+                    border: 1px solid #3a4350;
+                    selection-background-color: #2f6f9f;
+                }
+                QPushButton {
+                    background: #2c3440;
+                    color: #f2f5f8;
+                    border: 1px solid #4a5564;
+                    padding: 4px 8px;
+                }
+                QPushButton:hover {
+                    background: #374252;
+                }
+                QHeaderView::section {
+                    background: #2c3440;
+                    color: #f2f5f8;
+                    border: 1px solid #4a5564;
+                }
+                QMenu {
+                    background: #20262e;
+                    color: #f2f5f8;
+                    border: 1px solid #4a5564;
+                }
+                QMenu::item:selected {
+                    background: #2f6f9f;
+                }
+                QSplitter::handle {
+                    background: #3a4350;
+                }
+                QStatusBar {
+                    background: #151a20;
+                    color: #d7dce5;
+                }
+                """
+            )
+        else:
+            self.setStyleSheet("")
+
     def invalidate_plan(self):
         self.current_move_plan = None
         self.run_plan_btn.setEnabled(False)
@@ -980,31 +1076,72 @@ class ClustreeWindow(QMainWindow):
     def _apply_thumbnail_grid_settings(self):
         thumb_size = self.settings.thumbnail_size
         self.thumbnail_grid.setIconSize(QSize(thumb_size, thumb_size))
+        if hasattr(self, "thumbnail_size_slider"):
+            self.thumbnail_size_slider.blockSignals(True)
+            self.thumbnail_size_slider.setValue(thumb_size)
+            self.thumbnail_size_slider.blockSignals(False)
+            self.thumbnail_size_label.setText(f"{thumb_size}px")
 
         if self.settings.show_thumbnail_file_info:
-            self.thumbnail_grid.setGridSize(QSize(thumb_size + 74, thumb_size + 58))
+            self.thumbnail_grid.setGridSize(QSize(max(thumb_size + 116, 232), thumb_size + 104))
         else:
-            self.thumbnail_grid.setGridSize(QSize(thumb_size + 26, thumb_size + 28))
+            self.thumbnail_grid.setGridSize(QSize(thumb_size + 34, thumb_size + 42))
+
+        if self._is_dark_theme():
+            grid_background = "#151a20"
+            item_background = "#222a33"
+            item_border = "#3c4654"
+            selected_background = "#173b52"
+            selected_border = "#6bb6e8"
+            selected_text = "#f4f7fb"
+        else:
+            grid_background = "#f6f7f8"
+            item_background = "#ffffff"
+            item_border = "#cfd4dc"
+            selected_background = "#dbeafe"
+            selected_border = "#3178c6"
+            selected_text = "#111111"
 
         self.thumbnail_grid.setStyleSheet(
-            """
-            QListWidget {
-                background: #f6f7f8;
-                border: 1px solid #d4d7dc;
-            }
-            QListWidget::item {
-                background: #ffffff;
-                border: 1px solid #cfd4dc;
+            f"""
+            QListWidget {{
+                background: {grid_background};
+                border: 1px solid {item_border};
+            }}
+            QListWidget::item {{
+                background: {item_background};
+                border: 1px solid {item_border};
                 padding: 6px;
                 margin: 4px;
-            }
-            QListWidget::item:selected {
-                background: #dbeafe;
-                border: 2px solid #3178c6;
-                color: #111111;
-            }
+            }}
+            QListWidget::item:selected {{
+                background: {selected_background};
+                border: 2px solid {selected_border};
+                color: {selected_text};
+            }}
             """
         )
+
+    def on_thumbnail_size_slider_changed(self, value):
+        snapped = int(round(value / 16) * 16)
+        snapped = max(64, min(512, snapped))
+        self.thumbnail_size_label.setText(f"{snapped}px")
+
+    def commit_thumbnail_size_slider(self):
+        snapped = int(round(self.thumbnail_size_slider.value() / 16) * 16)
+        snapped = max(64, min(512, snapped))
+        if snapped == self.settings.thumbnail_size:
+            self.thumbnail_size_slider.setValue(snapped)
+            return
+
+        self.settings.thumbnail_size = snapped
+        save_settings(self.settings)
+        self._apply_thumbnail_grid_settings()
+        if self.current_cluster_id == DELETE_CLUSTER_ID:
+            self.load_delete_cluster()
+        elif self.current_cluster_id:
+            self.load_cluster_by_id(self.current_cluster_id)
+        self.update_status(f"Thumbnail size set to {snapped}px")
 
     def build_duplicate_groups(self):
         cursor = self.db.conn.cursor()
@@ -1379,6 +1516,7 @@ class ClustreeWindow(QMainWindow):
         self.settings = dialog.get_settings()
         save_settings(self.settings)
 
+        self.apply_theme()
         self._apply_thumbnail_grid_settings()
         self._apply_log_visibility()
         self.invalidate_plan()
@@ -1671,10 +1809,13 @@ class ClustreeWindow(QMainWindow):
 
     def _cluster_row_background(self, cluster_id, row_index):
         if cluster_id == DELETE_CLUSTER_ID:
-            return DELETE_CLUSTER_COLOR
+            return "#5c2424" if self._is_dark_theme() else DELETE_CLUSTER_COLOR
 
         if cluster_id in self.manual_cluster_colors:
             return self.manual_cluster_colors[cluster_id]
+
+        if self._is_dark_theme():
+            return "#222a33" if row_index % 2 == 0 else "#1b222a"
 
         return "#ffffff" if row_index % 2 == 0 else "#f3f3f3"
 
@@ -1721,19 +1862,19 @@ class ClustreeWindow(QMainWindow):
             f"""
             QWidget#clusterRow {{
                 background: {background};
-                border-bottom: 1px solid #d7d7d7;
+                border-bottom: 1px solid {'#3a4350' if self._is_dark_theme() else '#d7d7d7'};
                 border-left: {border_left_width} solid {border_left};
             }}
             QLabel#clusterName {{
-                color: #111111;
+                color: {'#f1f5f9' if self._is_dark_theme() else '#111111'};
                 font-weight: 600;
             }}
             QLabel#clusterDate {{
-                color: #4b5563;
+                color: {'#b8c1cc' if self._is_dark_theme() else '#4b5563'};
                 font-size: 11px;
             }}
             QLabel#clusterCount {{
-                color: #4b5563;
+                color: {'#b8c1cc' if self._is_dark_theme() else '#4b5563'};
                 font-size: 11px;
             }}
             """

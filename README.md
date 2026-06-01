@@ -27,10 +27,13 @@ Implemented now:
 - Version display in startup/window/settings/status bar.
 - Configurable cluster gap presets.
 - Configurable thumbnail size.
+- Inline thumbnail-size slider below the thumbnail pane.
 - Optional filename and smart file-size labels under thumbnails.
 - Configurable rename pattern.
 - Configurable staging/output root for manual promotion into a stable photo pool.
 - Optional bottom log pane with copy and clear actions.
+- Light/dark theme selector.
+- Help dialog with TL;DR workflow and project URL.
 - Draggable splitters between cluster/thumb/log panes.
 - Optional virtual `DELETE` holding cluster for confirmed permanent source-file removal.
 - Settings `CLEANUP` button to wipe local caches and the current Clustree database.
@@ -171,6 +174,7 @@ Current settings:
 - staging/output root
 - show DELETE cluster
 - show log pane
+- theme
 
 Cluster gap presets:
 
