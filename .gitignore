@@ -24,6 +24,11 @@ _TRASH_DUPLICATES/
 clustree_move_plan_*.json
 clustree_executed_plan_*.json
 
+# Local build/test artifacts
+build/
+dist/
+screenshots/
+
 # IDEs and Editors
 .vscode/
 .idea/
